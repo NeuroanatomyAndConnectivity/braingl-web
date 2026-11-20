@@ -37,6 +37,7 @@ uniform sampler2D u_lut;
 uniform float u_cmin;
 uniform float u_cmax;
 uniform float u_alphaExp;      // 10 * (1 - glyph alpha), as in points.vs
+uniform float u_alphaRef;      // |value| that is fully opaque: 1 for correlations (the raw r, as in points.vs), else the largest |value|
 
 vec3 fetchPos(sampler2D t, uint id) {
   return texelFetch(t, ivec2(int(id & 1023u), int(id >> 10u)), 0).xyz;
@@ -100,6 +101,6 @@ vec4 glyphColor(vec3 orient, float value) {
   if (u_colorMode == 1) {
     rgb = texture(u_lut, vec2(clamp((value - u_cmin) / (u_cmax - u_cmin), 0.0, 1.0), 0.5)).rgb;
   }
-  float a = pow(clamp(abs(value) / u_valueScale, 0.0, 1.0), u_alphaExp);
+  float a = pow(clamp(abs(value) / u_alphaRef, 0.0, 1.0), u_alphaExp);
   return vec4(rgb, a);
 }

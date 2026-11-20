@@ -16,7 +16,7 @@ import { Camera, CanonicalView } from "../src/gfx/camera";
 import { computeBounds, GlyphDataset } from "../src/data/dataset";
 import { isWebManifest, loadWebGlyphset } from "../src/data/loadWeb";
 import { bakeGlyphScene } from "../src/export/bake";
-import { buildBundleFiles, SceneCamera } from "../src/export/blenderBundle";
+import { buildBundleFiles, defaultSceneCamera, SceneCamera } from "../src/export/blenderBundle";
 import { bakeDirectionality, defaultArrowParams } from "../src/export/directionalityBake";
 import { sceneFromDataset, SceneSpec } from "../src/export/sceneFromDataset";
 import { toDirectionality } from "../src/bridge/toDirectionality";
@@ -25,6 +25,8 @@ import { hexToRgb } from "../src/ui/panel";
 import type { Layer } from "../src/export/ply";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+/** width / height of the exported cameras */
+const EXPORT_ASPECT = 16 / 9;
 
 interface Preset extends SceneSpec {
   about: string;
@@ -69,7 +71,7 @@ function cameraFor(ds: GlyphDataset, surface: number, view: CanonicalView, zoom 
   cam.frame(b.center, b.radius);
   cam.halfHeight /= zoom;
   cam.setView(view);
-  return { rotation: cam.rotation, target: cam.target, halfHeight: cam.halfHeight, aspect: 16 / 9, distance: cam.sceneRadius * 4 + 100 };
+  return { rotation: cam.rotation, target: cam.target, halfHeight: cam.halfHeight, aspect: EXPORT_ASPECT, distance: cam.sceneRadius * 4 + 100 };
 }
 
 function writeScene(out: string, title: string, layers: Layer[], background: [number, number, number], camera: SceneCamera | null): void {
@@ -90,7 +92,7 @@ export function exportGlyphPreset(ds: GlyphDataset, name: string, out: string, o
 
 export function exportDirectionality(base: string, out: string): void {
   const layers = bakeDirectionality(readFileSync(base + ".ply", "utf-8"), readFileSync(base + ".labels", "utf-8"), readFileSync(base + ".labelorder", "utf-8"), defaultArrowParams);
-  writeScene(out, `Directionality: ${base.split("/").pop()}`, layers, [0.05, 0.05, 0.06], null);
+  writeScene(out, `Directionality: ${base.split("/").pop()}`, layers, [0.05, 0.05, 0.06], defaultSceneCamera(layers, EXPORT_ASPECT));
 }
 
 /** The bridge, headless: the connectivity map of one seed node as a directionality scene. */
@@ -100,7 +102,8 @@ export function exportSeedDirectionality(ds: GlyphDataset, node: number, out: st
     name: ds.name, positions: ds.surfaces[input.params.surface].positions, triangles: ds.triangles, labels: input.labels, labelColors: [],
     scalars: input.seedRow, scalarName: `connectivity of node ${node}`,
   }, "scalars", colormapLut(input.params.colormap));
-  writeScene(out, d.name, bakeDirectionality(d.ply, d.labels, d.order, { ...defaultArrowParams, arrowScale: 0.012 }), [0.05, 0.05, 0.06], null);
+  const layers = bakeDirectionality(d.ply, d.labels, d.order, { ...defaultArrowParams, arrowScale: 0.012 });
+  writeScene(out, d.name, layers, [0.05, 0.05, 0.06], defaultSceneCamera(layers, EXPORT_ASPECT));
 }
 
 export async function main(): Promise<void> {

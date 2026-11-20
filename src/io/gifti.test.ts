@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { Buffer } from "node:buffer";
 import { deflateSync, gzipSync } from "node:zlib";
-import { giftiToMesh, giftiToScalars, parseGifti } from "./gifti";
+import { GIFTI_MAX_ELEMENTS, giftiToMesh, giftiToScalars, parseGifti } from "./gifti";
 
 type Encoding = "ASCII" | "Base64Binary" | "GZipBase64Binary";
 type Setter = (dv: DataView, off: number, v: number, little: boolean) => void;
@@ -260,6 +260,51 @@ describe("parseGifti", () => {
       await expect(parseGifti(short("ASCII"))).rejects.toThrow(/DataArray 0.*need 5 values.*holds 3/);
       await expect(parseGifti(short("Base64Binary"))).rejects.toThrow(/need 20 bytes.*decodes to 12/);
       await expect(parseGifti(short("GZipBase64Binary"))).rejects.toThrow(/need 20 bytes.*decodes to 12/);
+    });
+
+    it("rejects dimensions beyond the cap before reading the data", async () => {
+      const big = (dims: number[], encoding: Encoding, dataType = "NIFTI_TYPE_FLOAT64"): string =>
+        giftiXml([{ intent: "NIFTI_INTENT_SHAPE", dataType, dims, values: [1, 2, 3], encoding }]);
+      expect(GIFTI_MAX_ELEMENTS).toBe(2 ** 28);
+      for (const encoding of ["ASCII", "Base64Binary", "GZipBase64Binary"] as const) {
+        await expect(parseGifti(big([GIFTI_MAX_ELEMENTS + 1], encoding))).rejects.toThrow(/DataArray 0.*declare 268435457 elements, more than the 268435456/);
+        await expect(parseGifti(big([65536, 65536], encoding))).rejects.toThrow(/declare 4294967296 elements/);
+        await expect(parseGifti(big([1e15, 1e15, 1e15], encoding, "NIFTI_TYPE_UINT8"))).rejects.toThrow(/more than the 268435456/);
+      }
+      // the largest size the reader accepts is refused because the data is missing, not because of the cap
+      await expect(parseGifti(big([GIFTI_MAX_ELEMENTS], "ASCII"))).rejects.toThrow(/need 268435456 values but <Data> holds 3/);
+      await expect(parseGifti(big([GIFTI_MAX_ELEMENTS], "Base64Binary"))).rejects.toThrow(/need 2147483648 bytes but <Data> decodes to 24/);
+      await expect(parseGifti(big([GIFTI_MAX_ELEMENTS], "GZipBase64Binary"))).rejects.toThrow(/need 2147483648 bytes but <Data> decodes to 24/);
+      await expect(parseGifti(big([16384, 16384], "ASCII", "NIFTI_TYPE_UINT8"))).rejects.toThrow(/need 268435456 values but <Data> holds 3/);
+    });
+
+    it("counts the values of an ASCII array that is too short even when there are many", async () => {
+      const values = Array.from({ length: 1000 }, (_, i) => i);
+      const xml = giftiXml([{ intent: "NIFTI_INTENT_SHAPE", dataType: "NIFTI_TYPE_INT32", dims: [1001], values, encoding: "ASCII" }]);
+      await expect(parseGifti(xml)).rejects.toThrow(/need 1001 values but <Data> holds 1000/);
+      await expect(parseGifti(xml.replace('Dim0="1001"', 'Dim0="100000"'))).rejects.toThrow(/need 100000 values but <Data> holds 1000/);
+    });
+
+    it("stops inflating a stream that expands far beyond the declared size", async () => {
+      // 64 MiB of zeros compress to about 64 kB; the array claims to hold 4 values
+      const bomb = deflateSync(new Uint8Array(64 << 20)).toString("base64");
+      const xml = (dims: number[]): string =>
+        giftiXml([{ intent: "NIFTI_INTENT_SHAPE", dataType: "NIFTI_TYPE_FLOAT32", dims, values: [], encoding: "GZipBase64Binary", rawData: bomb }]);
+      expect(bomb.length).toBeLessThan(200000);
+      await expect(parseGifti(xml([4]))).rejects.toThrow(/DataArray 0.*decompress.*more than the 16 bytes that the dimensions declare/);
+      await expect(parseGifti(xml([0]))).rejects.toThrow(/more than the 0 bytes/);
+      // the same stream is fine when the dimensions really ask for it
+      const g = await parseGifti(xml([16 << 20]));
+      expect(g.arrays[0].data.length).toBe(16 << 20);
+      expect(g.arrays[0].data[(16 << 20) - 1]).toBe(0);
+    });
+
+    it("keeps accepting a few surplus bytes after the declared data", async () => {
+      const spec = (encoding: Encoding): ArraySpec => ({ intent: "NIFTI_INTENT_SHAPE", dataType: "NIFTI_TYPE_FLOAT32", dims: [3], values: [1, 2, 3, 4, 5], encoding });
+      for (const encoding of ["ASCII", "Base64Binary", "GZipBase64Binary"] as const) {
+        const g = await parseGifti(giftiXml([spec(encoding)]));
+        expect(Array.from(g.arrays[0].data)).toEqual([1, 2, 3]);
+      }
     });
 
     it("rejects malformed numbers, base64 and compressed streams", async () => {

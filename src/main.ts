@@ -53,6 +53,12 @@ function boot(): void {
     openInDirectionality: async (surface, source) => {
       try {
         const input = toDirectionality(surface, source, colormapLut(glyphs.params.colormap));
+        // directions are derived where two regions share a border; without one the other workspace would show no arrows
+        if (!input.touching) {
+          throw new Error(source === "labels"
+            ? "The painted regions do not touch. Directions are derived at the borders regions share: paint at least two adjacent regions."
+            : "The bins of the surface map do not share a border on this surface, so no direction can be derived from it.");
+        }
         show("directionality");
         const handle = await ensureDirectionality();
         await handle?.loadDataset(input.name, input.ply, input.labels, input.order);
@@ -67,7 +73,7 @@ function boot(): void {
     const btn = document.getElementById("blender-export") as HTMLButtonElement;
     btn.disabled = true;
     try {
-      const { buildBundleZip } = await import("./export/blenderBundle");
+      const { buildBundleZip, defaultSceneCamera } = await import("./export/blenderBundle");
       if (current === "directionality") {
         const [{ bakeDirectionality, defaultArrowParams }, { loadCachedDataset }] = await Promise.all([
           import("./export/directionalityBake"), import("./directionality/io/datasetCache"),
@@ -77,7 +83,9 @@ function boot(): void {
         let stored = {};
         try { stored = JSON.parse(localStorage.getItem("di-panel-params-v1") ?? "{}"); } catch { /* defaults */ }
         const layers = bakeDirectionality(cached.plyText, cached.labelsText, cached.orderText, { ...defaultArrowParams, ...stored });
-        downloadBlob(await buildBundleZip(cached.name, layers, [0.05, 0.05, 0.06], null, scriptUrl), "braingl-directionality-blender.zip");
+        // the Directionality view has its own camera model; export a left-lateral view that frames the mesh
+        const camera = defaultSceneCamera(layers, 16 / 9);
+        downloadBlob(await buildBundleZip(cached.name, layers, [0.05, 0.05, 0.06], camera, scriptUrl), "braingl-directionality-blender.zip");
       } else {
         const { bakeGlyphScene } = await import("./export/bake");
         const st = glyphs.exportState();
@@ -128,10 +136,21 @@ function boot(): void {
   let start = "glyphs";
   try { start = new URLSearchParams(location.search).get("workspace") ?? localStorage.getItem("braingl.workspace") ?? "glyphs"; } catch { /* ignore */ }
   show(start);
-  // ?data=<folder with a glyphset.json> loads another glyphset hosted next to the app instead of the demo
-  let dataUrl: string | null = null;
-  try { dataUrl = new URLSearchParams(location.search).get("data"); } catch { /* ignore */ }
-  void glyphs.loadDemo(dataUrl ? dataUrl.replace(/\/?$/, "/") : undefined);
+  // ?data=<folder with a glyphset.json> loads another glyphset hosted next to the app instead of the demo.
+  // Only same-origin folders are accepted: a link must not be able to make the app fetch and display
+  // data from somewhere else under this site's name.
+  let dataUrl: string | undefined;
+  try {
+    const q = new URLSearchParams(location.search).get("data");
+    if (q) {
+      const u = new URL(q, document.baseURI);
+      if (u.origin === location.origin) dataUrl = u.origin + u.pathname.replace(/\/?$/, "/");
+      else console.warn(`?data=${q} ignored: only folders on ${location.origin} can be loaded this way.`);
+    }
+  } catch {
+    console.warn("?data= ignored: not a valid URL.");
+  }
+  void glyphs.loadDemo(dataUrl);
   (window as unknown as { braingl: unknown }).braingl = { glyphs, show, directionality: ensureDirectionality, exportForBlender };
 }
 

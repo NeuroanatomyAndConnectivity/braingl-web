@@ -23,6 +23,20 @@ The first layout that matches is used:
 
 The node count is limited to 65,535 (see [Limits](limits.md)).
 
+### Validation
+
+Every layout ends in `validateDataset` (`src/data/dataset.ts`), which rejects a structurally invalid dataset before it
+reaches the GPU, where an out-of-range index would read garbage. It checks that:
+
+- there are at least 3 nodes (`dataset has <n> nodes`) and at least one surface;
+- every surface has exactly `3 * n` coordinates, all finite;
+- the triangle list is a multiple of 3 long and every index is smaller than `n`;
+- the mask has `n` entries and the matrix is `n x n`;
+- the hemisphere split is inside the mesh: `0 <= leftNodes <= n`, and `leftTriangles * 3` does not exceed the triangle
+  list;
+- every overlay has exactly `n` values. (The web-glyphset reader skips an overlay of the wrong length first; for loose
+  files an overlay group that does not add up to `n` is not created.)
+
 ## Web glyphset
 
 A folder with a manifest `glyphset.json` and raw little-endian binary files, written by
@@ -36,6 +50,7 @@ A folder with a manifest `glyphset.json` and raw little-endian binary files, wri
 | `version` | number | yes (written) | `1`. Not checked by the loader. |
 | `name` | string | yes | Dataset name shown in the panel. |
 | `description` | string | no | Shown below the name. Default empty. |
+| `credit` | string | no | Attribution line for the data (written by `nki-demo`). Not interpreted by the loader. |
 | `nodes` | integer | yes | Number of nodes `n`. |
 | `leftNodes` | integer | no | Number of nodes of the left hemisphere; nodes `0 .. leftNodes-1` are left, the rest right. 0 or absent: not split. |
 | `leftTriangles` | integer | no | Number of triangles of the left hemisphere (triangles `0 .. leftTriangles-1`). |
@@ -195,9 +210,11 @@ extension and content (`loadFromFiles`, third branch). Evaluated in this order f
 4. `.1D`: a **per-node scalar** file (whitespace-separated numbers).
 5. `.npy`, `.bin`, `.data`, `.dat`, `.f32`, `.raw`: a **matrix candidate**.
 6. Any other file: its first bytes are inspected. `FF FF FE` is a FreeSurfer binary
-   **surface**; `FF FF FF` with a consistent header is a FreeSurfer new-format
-   **curvature** file (`lh.curv`, `lh.sulc`, `lh.thickness`: per-node scalars); anything
-   else is a **matrix candidate**.
+   **surface**; `FF FF FF` with a consistent header (sniffed from the first 15 bytes plus the file size: the header must be consistent and the file at least as long
+   as the vertex count says) is a FreeSurfer new-format **curvature** file (`lh.curv`, `lh.sulc`, `lh.thickness`:
+   per-node scalars, used as overlays named `curv`, `sulc`, `thickness`); a truncated curvature file or a quadrangle
+   surface is skipped with a note and never taken for the matrix, unless its size is that of a square float32 matrix;
+   anything else is a **matrix candidate**.
 
 If there are several matrix candidates, the **largest file** is the matrix. The dataset takes
 the matrix file's name as its name. There must be at least one surface and one matrix,
@@ -257,6 +274,7 @@ Big-endian.
 uint8, int8, int16, uint16, int32, uint32, float32, float64; either endianness and indexing
 order. `ExternalFileBinary` is not supported. The POINTSET must have dimensions `[nVerts, 3]`
 and the TRIANGLE `[nTris, 3]`; the coordinate system transform matrix is **not** applied.
+An array is refused, before anything is allocated, when it declares more than 2^28 elements or when its declared dimensions disagree with the data actually present (an ASCII `<Data>` block with too few values, or a compressed stream that expands beyond the declared size).
 
 ## Overlays
 
@@ -363,5 +381,6 @@ The glyph workspace writes the same three files in memory for its "→ Direction
 region colour, grey 190 for unlabelled nodes; for a map, the colour map with the 2nd to 98th
 percentile as range); `.labels` holds one integer per vertex (0 for unpainted nodes, or nodes
 whose map value is zero or not finite); `.labelorder` lists the used regions in increasing
-order (painted regions) or `1..12` (map bins). Regions need at least two painted regions; a map
-needs at least 24 non-zero values.
+order (painted regions) or `1..12` (map bins). Regions need at least two painted regions, and the bridge refuses the export
+unless at least two regions share a border (a triangle with vertices in two regions), because directions are derived at
+shared borders only; a map needs at least 24 non-zero values and bins that touch.

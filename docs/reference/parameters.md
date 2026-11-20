@@ -56,7 +56,7 @@ In the inset the surface colour mode is always "seed" and the surface is opaque.
 | Point / line size | `primSize` | 0.5 to 12, step 0.1 | 2 | Point size or line width in CSS pixels (multiplied by the device pixel ratio). Hidden for pies. | `D_PRIMSIZE` (0 to 10, default 0.5) |
 | Round points | `roundPoints` | boolean | true | Round instead of square points. Has no panel control; set it with `setParams`. Applied only when the size is at least 3 device pixels. | none |
 | Pie normalisation | `normalization` | 0 to 1, step 0.01 | 0.5 | 0: all pies have the same radius; 1: pie area proportional to the number of connections. Shown for pies only. | `D_NORMALIZATION` (default 0.5) |
-| Glyph alpha | `glyphAlpha` | 0 to 1, step 0.01 | 1 | Below 1, weak connections fade (`alpha = (abs(v)/max)^(10(1-glyphAlpha))`). Hidden for pies. | `D_GLYPH_ALPHA` |
+| Glyph alpha | `glyphAlpha` | 0 to 1, step 0.01 | 1 | Below 1, weak connections fade (`alpha = (abs(v) / max(1, maxAbs))^(10(1-glyphAlpha))`, so correlations use the raw value, as brainGL does). Hidden for pies. | `D_GLYPH_ALPHA` |
 | Glyph geometry | `glyphGeometry` | surface index, or -1 for the polar projection | 0 (see below) | Surface whose shape each glyph copies. `-1` ("polar projection (sphere)") is offered only if a sphere is found. Hidden for pies. | `D_SURFACE_GLYPH_GEOMETRY` |
 | Colour mode | `glyphColorMode` | 0 orientation, 1 value | 0 | Colour glyphs by connection direction or by connection strength. | `D_GLYPH_COLORMODE` |
 | Glyph colour | `colorSurface` | surface index | 0 (see below) | Surface in which orientations are measured. Shown for orientation colouring. | `D_SURFACE_GLYPH_COLOR` |
@@ -68,10 +68,10 @@ In the inset the surface colour mode is always "seed" and the surface is opaque.
 
 | Control | Key | Type / range | Default | Meaning | brainGL |
 |---|---|---|---|---|---|
-| Threshold | `threshold` | 0 to `maxAbs`, step 0.005 | 0.5 | Lower bound on `abs(value)`. For diffpoints: minimum difference between neighbouring profiles. `maxAbs` is the largest absolute matrix value. | `D_THRESHOLD`, `D_THRESHOLD_PERC` |
+| Threshold | `threshold` | 0 to `maxAbs`, step 0.005 | 0.5 (0.5 * `maxAbs` for a matrix not in correlation units, see below) | Lower bound on `abs(value)`. For diffpoints: minimum difference between neighbouring profiles. `maxAbs` is the largest absolute matrix value. Selecting diffpoints lowers a threshold above 0.3 * `maxAbs` (see below). | `D_THRESHOLD`, `D_THRESHOLD_PERC` |
 | Sign | `sign` | 0 `+`, 1 `−`, 2 `+ / −` | 0 | Which signs of connection are drawn. | `D_GLYPH_THRESHOLD_SIGN` |
 | Minimum length (mm) | `minLength` | 0 to 150, step 1 | 20 | Hide connections shorter than this (strictly: kept when distance > value). | `D_MINLENGTH` (0 to 100, default 0) |
-| Length measured on | `lengthSurface` | surface index | 0 (see below) | Surface on which the length is measured. Shown when `minLength > 0`. | none (brainGL measures on the displayed surface) |
+| Length measured on | `lengthSurface` | surface index, or -1 for "displayed surface (as in brainGL)" | the anatomical surface (see below) | Surface on which the length is measured. With -1 the length is measured on whichever surface is displayed. Shown when `minLength > 0`. | none (brainGL measures on the displayed surface) |
 | Upper threshold | `maxThreshold` | 0 to `maxAbs`, step 0.005 | `maxAbs` (set on load; the `.glyphset` value when given) | Upper bound on `abs(value)`. `m_maxThreshold` (third item of line 3 of a `.glyphset` file, used when below 1) |
 | Connexel budget (millions) | `budgetM` | 0.5 to 40, step 0.5, applied on release | 4 | Upper bound on connexels sent to the GPU; sets a lower bound on the effective threshold. | the load-time minimum threshold (`m_minThreshold`) |
 
@@ -83,8 +83,8 @@ how many connexels pass.
 | Control | Key | Type / range | Default | Meaning | brainGL |
 |---|---|---|---|---|---|
 | Colour map | `colormap` | name from the table below | `cool - warm` | Lookup table for value colouring of glyphs, surface maps, little brains and connection lines. | colormap bar properties |
-| Min / Max | `cmin`, `cmax` | -1 to 1, step 0.01 | -0.8, 0.8 | Values mapped to the two ends of the map (`D_SELECTED_MIN`, `D_SELECTED_MAX`). For overlays the 2nd and 98th percentile are used instead. | `D_SELECTED_MIN`, `D_SELECTED_MAX` |
-| Surface map lower threshold | `seedLower` | 0 to 1, step 0.01 | 0.2 | Seed-based connectivity with absolute value below this shows the anatomy colour instead. | `D_LOWER_THRESHOLD` |
+| Min / Max | `cmin`, `cmax` | `-maxAbs` to `maxAbs` (-1 to 1 for correlations), step 0.01 | -0.8, 0.8 (scaled by `maxAbs` for a matrix not in correlation units) | Values mapped to the two ends of the map (`D_SELECTED_MIN`, `D_SELECTED_MAX`). For overlays the 2nd and 98th percentile are used instead. | `D_SELECTED_MIN`, `D_SELECTED_MAX` |
+| Surface map lower threshold | `seedLower` | 0 to `maxAbs` (0 to 1 for correlations), step 0.01 | 0.2 (0.2 * `maxAbs` for a matrix not in correlation units) | Seed-based connectivity with absolute value below this shows the anatomy colour instead. | `D_LOWER_THRESHOLD` |
 
 ### Colour maps
 
@@ -140,7 +140,7 @@ This section is collapsed by default.
 | Control | Key | Type / range | Default | Meaning | brainGL |
 |---|---|---|---|---|---|
 | Maximum connexels | `maxConnexels` | 100 to 40000, step 100 | 5000 | Cap for "Make connections"; the strongest connexels are kept. | n/a |
-| Make connections | button | | | Create one line per node pair that passes the current filters in either direction and exceeds the minimum length, using at least `0.02 * maxAbs` as threshold. Sets `showConnections`, and lowers the surface alpha to 0.25 if it was above 0.6. | `createConnections` |
+| Make connections | button | | | Create one line per node pair that passes the current filters in either direction and exceeds the minimum length, using as threshold the larger of the threshold in effect on screen (never below the build threshold) and `0.02 * maxAbs`. The upper threshold is not applied to connections. Sets `showConnections`, and lowers the surface alpha to 0.25 if it was above 0.6. | `createConnections` |
 | Bundle | button | | | Mean-shift edge bundling in a Web Worker. | bundler of Böttger et al. 2014 |
 | Clear | button | | | Remove connections and bundles. | n/a |
 | Show connections | `showConnections` | boolean | true | Draw the lines. | n/a |
@@ -173,25 +173,47 @@ available (it is, in the standard app).
 ## Dataset-dependent defaults
 
 Settings and camera views are remembered per kind of dataset: a signature made of the node count and the
-surface names is stored in `localStorage` (`braingl.glyphs.dataset`). When a dataset with a different
-signature (or without stored camera state) is loaded, `setDataset` re-initialises:
+surface names is stored in `localStorage` (`braingl.glyphs.dataset`), and the camera views under a key with the node
+count. When a dataset with the same signature is loaded again, your parameters and views are kept (surface indices are
+clamped to the surfaces that exist). When the signature differs, or no camera state was stored, `setDataset`
+re-initialises:
 
 - `surface`: the surface whose name contains `inflated`, else index 1 (or the last, if
   there is only one);
 - `secondSurface`: first of `pial`, `midthickness`, `white`, else 0;
 - `glyphGeometry`, `colorSurface` and `lengthSurface`: set to the same surface as
-  `secondSurface`;
+  `secondSurface`, so the minimum length is measured on the anatomical surface;
 - `glyphRadius`: `0.0042 * (mean mesh edge length of the displayed surface)`, rounded to
   4 decimals and clamped to 0.002 to 0.2;
-- `maxThreshold`: `maxAbs`, or the upper threshold of a `.glyphset` file when it is below 1; `threshold`: clamped to at most `maxAbs`, and raised to the
-  load-time minimum threshold of a `.glyphset` file when there is one.
+- `maxThreshold`: `maxAbs`, or the upper threshold of a `.glyphset` file when it is below 1;
+  `threshold`: clamped to at most `maxAbs`, and raised to the load-time minimum threshold of a `.glyphset` file when
+  there is one.
+
+**Matrices that are not correlations.** Thresholds and the colour range are remembered in the units of the matrix they
+were chosen for. The unit is 1 when the largest absolute value `maxAbs` lies between 0.5 and 1.0001 (correlations), and
+`maxAbs` otherwise (weights, counts, small values); the last unit is stored in `localStorage` (`braingl.glyphs.unit`).
+When a dataset arrives whose unit differs from the stored one, `threshold = 0.5 * unit`, `cmin = -0.8 * unit`,
+`cmax = 0.8 * unit` and `seedLower = 0.2 * unit`. The sliders follow the data: the colour-map `Min` and `Max` range
+over minus to plus the largest value (rounded up to a step; -1 to 1 for correlations), the "surface map lower threshold"
+over 0 to that value, and the steps are about a hundredth of the unit (threshold and upper threshold: a two-hundredth).
+Whatever came from storage, a scene file or another dataset is checked against the loaded data: a threshold below 0
+becomes 0, a threshold not below `maxAbs` becomes `0.5 * maxAbs`, an upper threshold outside 0 to `maxAbs` becomes
+`maxAbs`, colour limits are clamped, unknown surface indices, values of the wrong type and unknown choices fall back to
+the defaults, and `budgetM`, `lbMax`, `maxConnexels` and `screenshotScale` are kept within the ranges of their sliders.
+A slider whose maximum depends on the data (the threshold sliders, the colour limits) snaps its last stop to that maximum.
+
+**Difference glyphs.** Differences between neighbouring profiles are small, so a threshold that suits connection
+strength shows nothing. When the glyph style is switched to `diffpoints` and the current threshold is above
+`0.3 * maxAbs`, the threshold is set to `0.2 * maxAbs` and the minimum length to 0. The previous values are restored when
+you leave the style.
 
 If a ROI came with the data, its nodes are painted as region 1 and `glyphNodes` becomes
-`"painted"`.
+`"painted"`. Loading a scene validates and clamps its parameters in the same way (only known parameters are taken). The temporary threshold and minimum length of the difference glyphs are never written to storage.
 
 ## Status line
 
-The line at the bottom of the main view (`updateStatus`), separated by middle dots:
+The line at the bottom of the main view (`updateStatus`), separated by middle dots (an error message replaces it for 8 seconds):
+
 
 | Field | Meaning |
 |---|---|

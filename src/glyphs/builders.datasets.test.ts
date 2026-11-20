@@ -268,9 +268,13 @@ describe.each(FIXTURES)("pie glyphs on $name", ({ make }) => {
 
 interface DiffEntry { a: number; b: number; j: number; va: number; vb: number }
 
-function refDiff(conn: ConnMatrix, edges: Uint32Array, f: BuildFilter, threshold: number): DiffEntry[] {
-  const lo = Math.max(1, Math.floor(threshold / conn.scale)), hi = Math.ceil(f.maxThreshold / conn.scale);
-  const passes = (raw: number) => Math.abs(raw) >= lo && Math.abs(raw) <= hi && (raw > 0 ? f.sign !== 1 : f.sign !== 0);
+/**
+ * Every (edge, target) entry of which at least one endpoint value reaches the raw lower bound `lo` with the
+ * right sign. The upper threshold of the filter is deliberately not applied: on screen it bounds the
+ * difference, not the endpoint values.
+ */
+function refDiffRaw(conn: ConnMatrix, edges: Uint32Array, f: BuildFilter, lo: number): DiffEntry[] {
+  const passes = (raw: number) => Math.abs(raw) >= lo && (raw > 0 ? f.sign !== 1 : f.sign !== 0);
   const out: DiffEntry[] = [];
   for (let e = 0; e < edges.length; e += 2) {
     const a = edges[e], b = edges[e + 1];
@@ -282,6 +286,23 @@ function refDiff(conn: ConnMatrix, edges: Uint32Array, f: BuildFilter, threshold
     }
   }
   return out;
+}
+
+/** The raw lower bound the builders derive from a threshold. */
+const rawLo = (conn: ConnMatrix, threshold: number) => Math.max(1, Math.floor(threshold / conn.scale));
+
+function refDiff(conn: ConnMatrix, edges: Uint32Array, f: BuildFilter, threshold: number): DiffEntry[] {
+  return refDiffRaw(conn, edges, f, rawLo(conn, threshold));
+}
+
+/**
+ * The key of an entry, written out per sign: the entry is kept at raw bound `lo` exactly when key >= lo.
+ * sign 0: max(r1, r2); sign 1: -min(r1, r2); sign 2: max(|r1|, |r2|).
+ */
+function diffKey(e: DiffEntry, sign: SignMode): number {
+  if (sign === 0) return Math.max(e.va, e.vb);
+  if (sign === 1) return -Math.min(e.va, e.vb);
+  return Math.max(Math.abs(e.va), Math.abs(e.vb));
 }
 
 /** Index of the first difference between a diff buffer and the reference, -1 when identical. */
@@ -337,45 +358,128 @@ describe.each(FIXTURES)("buildDiffConnexels on $name", ({ make }) => {
     expect(unpackDiff(d.data, d.count).every((c) => targets[c.j] === 1)).toBe(true);
   });
 
-  // TODO(restart): buildDiffConnexels now picks its threshold from one histogram pass (count <= budget, threshold >= requested,
-  // no maxThreshold); rewrite this case against that rule instead of the old 2.5 % stepping.
-  it.skip("raises the threshold in steps of 2.5 % of maxAbs until the budget is met, and no further", () => {
-    const f: BuildFilter = { glyphNodes: glyphNodesFor(ds), targets: null, sign: 2, threshold: 0.05 * A, maxThreshold: A };
-    const full = refDiff(conn, topo.edges, f, f.threshold).length;
-    expect(full).toBeGreaterThan(100);
-    let prevThreshold = 0;
-    for (const budget of [full, full - 1, Math.floor(full / 2), Math.floor(full / 5), Math.floor(full / 50), 20]) {
-      const d = buildDiffConnexels(conn, topo.edges, f, budget);
-      expect(d.threshold).toBeGreaterThanOrEqual(prevThreshold); // a smaller budget never lowers the threshold
-      prevThreshold = d.threshold;
-      if (budget === full) expect(d.threshold).toBe(f.threshold);
-      else expect(d.threshold).toBeGreaterThan(f.threshold);
-      // the threshold is start + k * 0.025 * maxAbs
-      const steps = (d.threshold - f.threshold) / (0.025 * A);
-      if (d.threshold < A) expect(Math.abs(steps - Math.round(steps))).toBeLessThan(1e-6);
-      const ref = refDiff(conn, topo.edges, f, d.threshold);
-      if (ref.length <= budget) {
-        expect(d.count).toBe(ref.length);
-        expect(diffMismatch(d.data, d.count, ref)).toBe(-1);
-        // one step lower would not have fitted
-        if (d.threshold > f.threshold) expect(refDiff(conn, topo.edges, f, d.threshold - 0.025 * A).length).toBeGreaterThan(budget);
-      } else {
-        expect(d.threshold).toBeCloseTo(A, 9); // nothing more can be done
+  // The budget rule: one exact count per raw value of the key (max(r1, r2) for sign +, -min(r1, r2) for -,
+  // max(|r1|, |r2|) for +-), then the smallest raw bound at or above the requested one whose count fits.
+  describe.each(SIGNS)("budget, sign %i", (sign) => {
+    const f: BuildFilter = { glyphNodes: glyphNodesFor(ds), targets: null, sign, threshold: 0.05 * A, maxThreshold: A };
+    const lo0 = rawLo(conn, f.threshold);
+    // every candidate entry with its key, in buffer order
+    const candidates = refDiffRaw(conn, topo.edges, f, 1);
+    const keys = candidates.map((e) => diffKey(e, sign));
+    const sorted = Int32Array.from(keys).sort();
+    /** number of entries whose key is at least `lo` (binary search in the sorted keys) */
+    const countAt = (lo: number): number => {
+      let a = 0, b = sorted.length;
+      while (a < b) { const m = (a + b) >> 1; if (sorted[m] < lo) a = m + 1; else b = m; }
+      return sorted.length - a;
+    };
+    const full = countAt(lo0);
+    /** smallest raw bound >= lo0 whose count fits the budget, by trying them all (32768 holds nothing: no value reaches it) */
+    const expectedLo = (budget: number): number => {
+      let lo = lo0;
+      while (lo < 32768 && countAt(lo) > budget) lo++;
+      return lo;
+    };
+    // from generous to nothing, each budget once
+    const budgets = [...new Set([1e9, full + 1, full, full - 1, Math.floor(full / 2), Math.floor(full / 5), Math.floor(full / 50), 20, 1, 0])]
+      .filter((b) => b >= 0).sort((x, y) => y - x);
+
+    it("has entries to work with", () => {
+      // the fixtures without negative values have nothing to show for sign 1
+      if (sign === 1 && !conn.data.some((v) => v < 0)) expect(full).toBe(0);
+      else expect(full).toBeGreaterThan(100);
+      // the binary search agrees with a plain count
+      for (const lo of [1, lo0, rawLo(conn, 0.35 * A), 32767, 32768]) expect(countAt(lo)).toBe(keys.filter((k) => k >= lo).length);
+    });
+
+    it("keeps the requested threshold while the budget allows, else takes the smallest raw threshold that fits", () => {
+      let prevThreshold = 0;
+      for (const budget of budgets) {
+        const d = buildDiffConnexels(conn, topo.edges, f, budget);
+        const lo = expectedLo(budget);
+        expect(d.threshold).toBeGreaterThanOrEqual(prevThreshold); // a smaller budget never lowers the threshold
+        prevThreshold = d.threshold;
+        if (lo === lo0) expect(d.threshold).toBe(f.threshold);
+        else {
+          expect(d.threshold).toBe(lo * conn.scale);
+          expect(d.threshold).toBeGreaterThan(f.threshold);
+          expect(countAt(lo - 1)).toBeGreaterThan(budget); // one raw step lower would not have fitted
+        }
+        expect(d.count).toBe(countAt(lo));
+        expect(d.count).toBeLessThanOrEqual(budget);
+        expect(d.data.byteLength).toBe(Math.max(1, d.count) * DIFF_STRIDE);
+        expect(diffMismatch(d.data, d.count, refDiffRaw(conn, topo.edges, f, lo))).toBe(-1);
       }
-    }
+    });
+
+    it("counts the key, not the two endpoint values separately", () => {
+      // an entry with both endpoints above the bound is one entry: the count equals a plain filter on the key
+      for (const fraction of [0.05, 0.35, 0.613]) {
+        const lo = rawLo(conn, fraction * A);
+        expect(refDiffRaw(conn, topo.edges, f, lo).length).toBe(countAt(lo));
+        expect(buildDiffConnexels(conn, topo.edges, { ...f, threshold: fraction * A }, 1e9).count).toBe(countAt(lo));
+      }
+    });
+
+    it("does not apply the upper threshold, with or without a budget", () => {
+      for (const budget of [1e9, Math.floor(full / 5)]) {
+        const open = buildDiffConnexels(conn, topo.edges, f, budget);
+        for (const maxThreshold of [0.5 * A, 0.06 * A, 0]) {
+          const capped = buildDiffConnexels(conn, topo.edges, { ...f, maxThreshold }, budget);
+          expect(capped.threshold).toBe(open.threshold);
+          expect(capped.count).toBe(open.count);
+          expect(diffMismatch(capped.data, capped.count, unpackDiff(open.data, open.count))).toBe(-1);
+        }
+      }
+    });
+
+    it("applies the budget to the restricted targets and glyph nodes only", () => {
+      const targets = Uint8Array.from(ds.modules, (m) => (m % 2 ? 1 : 0));
+      const nodes = glyphNodeSets(ds)[3].nodes; // every 5th node: few edges have both ends in it
+      for (const g of [{ ...f, targets }, { ...f, glyphNodes: nodes }]) {
+        const all = refDiffRaw(conn, topo.edges, g, 1).map((e) => diffKey(e, sign));
+        const at = (lo: number) => { let c = 0; for (const k of all) if (k >= lo) c++; return c; };
+        const budget = Math.floor(at(lo0) / 3);
+        const d = buildDiffConnexels(conn, topo.edges, g, budget);
+        const lo = d.threshold === g.threshold ? lo0 : Math.round(d.threshold / conn.scale);
+        expect(d.count).toBe(at(lo));
+        expect(d.count).toBeLessThanOrEqual(budget);
+        if (lo > lo0) expect(at(lo - 1)).toBeGreaterThan(budget);
+        expect(diffMismatch(d.data, d.count, refDiffRaw(conn, topo.edges, g, lo))).toBe(-1);
+      }
+    });
   });
 });
 
 describe("buildDiffConnexels at the end of the range", () => {
-  // Was a bug (fixed since the histogram-based rewrite): when even threshold = maxAbs leaves more than `budget`
-  // entries, the loop stops with count > budget and that many entries are written, so the result exceeds the
-  // budget. Only reachable with tiny budgets (a matrix has few entries at +-maxAbs), hence harmless in the app.
-  it("never returns more entries than the budget", () => {
-    // three nodes in a triangle, every connection at the maximum
-    const conn = ConnMatrix.fromFull([0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0].slice(0, 9), 3);
-    const edges = new Uint32Array([0, 1, 0, 2, 1, 2]);
-    const d = buildDiffConnexels(conn, edges, { glyphNodes: new Uint8Array([1, 1, 1]), targets: null, sign: 0, threshold: 0.5, maxThreshold: 1 }, 2);
-    expect(d.count).toBeLessThanOrEqual(2); // returns 3
+  // three nodes in a triangle, every connection at the maximum
+  const conn = ConnMatrix.fromFull([0, 1, 1, 1, 0, 1, 1, 1, 0], 3);
+  const edges = new Uint32Array([0, 1, 0, 2, 1, 2]);
+  const f: BuildFilter = { glyphNodes: new Uint8Array([1, 1, 1]), targets: null, sign: 0, threshold: 0.5, maxThreshold: 1 };
+
+  // Used to be a bug (before the histogram-based rule): when even threshold = maxAbs left more than `budget`
+  // entries, all of them were written.
+  it("never returns more entries than the budget: when even the largest value does not fit, nothing is kept", () => {
+    expect(buildDiffConnexels(conn, edges, f, 1e9).count).toBe(3);
+    expect(buildDiffConnexels(conn, edges, f, 3).count).toBe(3);
+    const d = buildDiffConnexels(conn, edges, f, 2);
+    expect(d.count).toBe(0);
+    expect(d.threshold).toBeGreaterThan(conn.maxAbs); // one raw step above everything
+    expect(d.threshold).toBeCloseTo(32768 * conn.scale, 12);
+    expect(d.data.byteLength).toBe(DIFF_STRIDE);
+  });
+
+  it("accepts a fractional or negative budget", () => {
+    expect(buildDiffConnexels(conn, edges, f, 3.7).count).toBe(3);
+    expect(buildDiffConnexels(conn, edges, f, 2.999).count).toBe(0);
+    expect(buildDiffConnexels(conn, edges, f, -5).count).toBe(0);
+  });
+
+  it("an empty edge list or an empty selection gives an empty set at the requested threshold", () => {
+    for (const d of [buildDiffConnexels(conn, new Uint32Array(0), f, 10), buildDiffConnexels(conn, edges, { ...f, glyphNodes: new Uint8Array(3) }, 10)]) {
+      expect(d.count).toBe(0);
+      expect(d.threshold).toBe(0.5);
+    }
   });
 });
 

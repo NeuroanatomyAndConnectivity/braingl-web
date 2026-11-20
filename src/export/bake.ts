@@ -2,6 +2,7 @@ import { mat3, mat4, vec3 } from "gl-matrix";
 import type { GlyphDataset, MeshTopology, SphereInfo } from "../data/dataset";
 import { computeNormals, normaliseSulc } from "../data/dataset";
 import type { GlyphParams } from "../glyphs/params";
+import { lengthSurfaceIndex } from "../glyphs/params";
 import { buildConnexels, buildDiffConnexels, computePieRanks, sortForPies } from "../glyphs/builders";
 import type { Polylines } from "../algorithms/meanShiftBundling";
 import { colormapLut } from "../render/colormaps";
@@ -23,8 +24,14 @@ export interface GlyphBakeInput {
   sphere: SphereInfo | null;
   params: GlyphParams;
   glyphNodes: Uint8Array;
+  /** connection-target mask (brainGL's second ROI), or null for "every node" */
+  targets: Uint8Array | null;
   /** threshold in effect (never below what the GPU buffers hold) */
   threshold: number;
+  /** lowest |value| held in the GPU connexel buffers (from the connexel budget) */
+  buildThreshold: number;
+  /** connexel budget in primitives (budgetM * 1e6) */
+  budget: number;
   labels: Uint8Array;
   labelColors: string[];
   seedRow: Float32Array | null;
@@ -109,9 +116,9 @@ export function bakeGlyphs(input: GlyphBakeInput): Layer | null {
   const n = ds.n;
   const disp = ds.surfaces[p.surface].positions;
   const polar = p.glyphGeometry === -1 && !!sphere;
-  const geo = ds.surfaces[polar ? p.colorSurface : p.glyphGeometry].positions;
+  const geo = ds.surfaces[polar ? p.colorSurface : Math.max(0, p.glyphGeometry)].positions;
   const col = ds.surfaces[p.colorSurface].positions;
-  const len = ds.surfaces[p.lengthSurface].positions;
+  const len = ds.surfaces[lengthSurfaceIndex(p)].positions;
   const sph = sphere ? ds.surfaces[sphere.surface].positions : null;
   const normals = computeNormals(disp, ds.triangles);
   const rot = glyphRotation(p);
@@ -120,7 +127,9 @@ export function bakeGlyphs(input: GlyphBakeInput): Layer | null {
   const scale = ds.conn.scale;
   const minL2 = p.minLength * p.minLength;
   const split = ds.leftNodes > 0 && ds.leftNodes < n ? ds.leftNodes : 0;
-  const filter = { glyphNodes: input.glyphNodes, targets: null, sign: p.sign, threshold: input.threshold, maxThreshold: p.maxThreshold };
+  // As on screen, the upper threshold is never part of the build filter: it is applied below,
+  // when the primitives are selected (points / vectors / differences) or ranked (pies).
+  const filter = { glyphNodes: input.glyphNodes, targets: input.targets, sign: p.sign, threshold: input.threshold, maxThreshold: ds.conn.maxAbs };
   const fr = new Float32Array(9);
   const tmp = vec3.create();
 
@@ -175,7 +184,8 @@ export function bakeGlyphs(input: GlyphBakeInput): Layer | null {
   };
 
   if (p.glyphStyle === "diffpoints") {
-    const d = buildDiffConnexels(ds.conn, input.topo.edges, { ...filter, threshold: Math.max(input.threshold * 0.5, ds.conn.maxAbs * 0.15) }, input.maxPrims * 4);
+    // same prefilter and budget as the screen (GlyphApp.ensureGlyphs), then the display test of diff.vert.glsl
+    const d = buildDiffConnexels(ds.conn, input.topo.edges, { ...filter, threshold: Math.max(input.buildThreshold * 0.5, ds.conn.maxAbs * 0.15) }, input.budget);
     const u16 = new Uint16Array(d.data), i16 = new Int16Array(d.data);
     const fisher = ds.conn.maxAbs <= 1.0001;
     const keep: number[] = [];
@@ -183,7 +193,7 @@ export function bakeGlyphs(input: GlyphBakeInput): Layer | null {
     for (let k = 0; k < d.count; k++) {
       const v1 = i16[6 * k + 4] * scale, v2 = i16[6 * k + 5] * scale;
       const diff = fisher ? Math.tanh(Math.abs(Math.atanh(clampR(v1)) - Math.atanh(clampR(v2)))) : Math.abs(v1 - v2);
-      if (!(diff > p.threshold && diff <= p.maxThreshold)) continue;
+      if (!(diff > input.threshold && diff <= p.maxThreshold)) continue;
       const a = u16[6 * k], b = u16[6 * k + 1], j = u16[6 * k + 2];
       const mx = 0.5 * (len[3 * a] + len[3 * b]) - len[3 * j], my = 0.5 * (len[3 * a + 1] + len[3 * b + 1]) - len[3 * j + 1], mz = 0.5 * (len[3 * a + 2] + len[3 * b + 2]) - len[3 * j + 2];
       if (mx * mx + my * my + mz * mz <= minL2) continue;
@@ -192,14 +202,15 @@ export function bakeGlyphs(input: GlyphBakeInput): Layer | null {
     const stride = Math.max(1, Math.ceil(keep.length / input.maxPrims));
     const m = Math.ceil(keep.length / stride);
     const positions = new Float32Array(3 * m), colors = new Uint8Array(4 * m);
-    const pa = new Float32Array(3), pb = new Float32Array(3);
+    const pa = new Float32Array(3), pb = new Float32Array(3), mid = new Float32Array(3);
     for (let q = 0, o = 0; q < keep.length; q += stride, o++) {
       const k = keep[q];
       const a = u16[6 * k], b = u16[6 * k + 1], j = u16[6 * k + 2];
       const nx = normals[3 * a] + normals[3 * b], ny = normals[3 * a + 1] + normals[3 * b + 1], nz = normals[3 * a + 2] + normals[3 * b + 2];
       const nl = Math.hypot(nx, ny, nz) || 1;
-      const cx = 0.5 * (disp[3 * a] + disp[3 * b]) + (nx / nl) * lift, cy = 0.5 * (disp[3 * a + 1] + disp[3 * b + 1]) + (ny / nl) * lift, cz = 0.5 * (disp[3 * a + 2] + disp[3 * b + 2]) + (nz / nl) * lift;
-      frameAt(normals, a, fr);
+      mid[0] = nx / nl; mid[1] = ny / nl; mid[2] = nz / nl; // normal at the edge midpoint
+      const cx = 0.5 * (disp[3 * a] + disp[3 * b]) + mid[0] * lift, cy = 0.5 * (disp[3 * a + 1] + disp[3 * b + 1]) + mid[1] * lift, cz = 0.5 * (disp[3 * a + 2] + disp[3 * b + 2]) + mid[2] * lift;
+      frameAt(mid, 0, fr);
       place(a, j, cx, cy, cz, pa, 0);
       place(b, j, cx, cy, cz, pb, 0);
       positions[3 * o] = 0.5 * (pa[0] + pb[0]); positions[3 * o + 1] = 0.5 * (pa[1] + pb[1]); positions[3 * o + 2] = 0.5 * (pa[2] + pb[2]);
@@ -213,30 +224,35 @@ export function bakeGlyphs(input: GlyphBakeInput): Layer | null {
 
   if (p.glyphStyle === "pies") {
     const sorted = sortForPies(set, n, col, p.glyphColorMode === 1);
-    const { ranks, maxCount, visible } = computePieRanks(sorted, set.nodeStart, n, len, scale, { threshold: input.threshold, maxThreshold: p.maxThreshold, minLength: p.minLength, sign: p.sign });
+    const { ranks, maxCount } = computePieRanks(sorted, set.nodeStart, n, len, scale, { threshold: input.threshold, maxThreshold: p.maxThreshold, minLength: p.minLength, sign: p.sign });
     const su = new Uint16Array(sorted), si = new Int16Array(sorted);
     // A pie can have thousands of slices. Beyond WEDGES per pie they are narrower than
     // anything a render can resolve, so each pie is resampled to at most WEDGES equal
-    // wedges, each with the mean colour of the slices it covers.
-    const WEDGES = 48;
+    // wedges, each with the mean colour of the slices it covers. A wedge is one flat
+    // triangle, so a pie of one or two slices (a full or half disc) is cut into
+    // SMALL_PIE_WEDGES wedges; otherwise its triangles would have no area.
+    const WEDGES = 48, SMALL_PIE_WEDGES = 24;
     const P: number[] = [], C: number[] = [];
     const rgba = new Uint8Array(4);
     const acc = new Float64Array(3 * WEDGES), cnt = new Uint32Array(WEDGES);
-    void visible;
     for (let i = 0; i < n; i++) {
       const s0 = set.nodeStart[i], e0 = set.nodeStart[i + 1];
       if (s0 === e0) continue;
       const count = ranks[2 * s0 + 1];
       if (!count) continue;
-      const W = Math.min(count, WEDGES);
+      const W = count < 3 ? SMALL_PIE_WEDGES : Math.min(count, WEDGES);
       acc.fill(0); cnt.fill(0);
       for (let k = s0; k < e0; k++) {
         const rank = ranks[2 * k];
         if (rank === 0xffff) continue;
         const j = su[4 * k + 1];
         setColor(rgba, 0, col[3 * j] - col[3 * i], col[3 * j + 1] - col[3 * i + 1], col[3 * j + 2] - col[3 * i + 2], si[4 * k + 2] * scale);
-        const w = Math.min(W - 1, Math.floor((rank * W) / count));
-        acc[3 * w] += rgba[0]; acc[3 * w + 1] += rgba[1]; acc[3 * w + 2] += rgba[2]; cnt[w]++;
+        // wedges [w0, w1) of this slice: exactly one, except in the small pies, where a slice spans several
+        const w0 = Math.floor((rank * W) / count);
+        const w1 = Math.max(w0 + 1, Math.floor(((rank + 1) * W) / count));
+        for (let w = w0; w < w1; w++) {
+          acc[3 * w] += rgba[0]; acc[3 * w + 1] += rgba[1]; acc[3 * w + 2] += rgba[2]; cnt[w]++;
+        }
       }
       frameAt(normals, i, fr);
       const rel = count / Math.max(1, maxCount);
@@ -260,12 +276,13 @@ export function bakeGlyphs(input: GlyphBakeInput): Layer | null {
     return { name: "glyphs pies", kind: "mesh", positions, colors, triangles, shading: "flat", smooth: false };
   }
 
-  // points and vectors
-  const lo = input.threshold / scale, hi = p.maxThreshold / scale;
+  // points and vectors: the test of passes() in common.glsl, in value units (dividing the thresholds
+  // by the scale instead can lose the largest entries to rounding when maxThreshold = maxAbs)
+  const lo = input.threshold, hi = p.maxThreshold;
   const pos = p.sign !== 1, neg = p.sign !== 0;
   const keep: number[] = [];
   for (let k = 0; k < set.count; k++) {
-    const v = i16[4 * k + 2];
+    const v = i16[4 * k + 2] * scale;
     if (!(v > 0 ? pos && v > lo && v <= hi : neg && v < -lo && v >= -hi)) continue;
     if (minL2 > 0) {
       const i = u16[4 * k], j = u16[4 * k + 1];
@@ -330,12 +347,11 @@ export function bakeLittleBrains(input: GlyphBakeInput): Layer | null {
   const sulc = sulcO && p.lbColorMode !== 0 ? normaliseSulc(sulcO.data) : null;
   const lift = p.depthLift * p.glyphRadius * 100;
   const positions = new Float32Array(3 * n * nodes.length), colors = new Uint8Array(4 * n * nodes.length), triangles = new Uint32Array(nt * nodes.length);
-  const row = new Float32Array(n);
+  const raw = ds.conn.data, scale = ds.conn.scale;
   const tmp = vec3.create();
   const pos = p.sign !== 1, neg = p.sign !== 0;
   nodes.forEach((node, k) => {
     const cx = disp[3 * node] + normals[3 * node] * lift, cy = disp[3 * node + 1] + normals[3 * node + 1] * lift, cz = disp[3 * node + 2] + normals[3 * node + 2] * lift;
-    if (p.lbColorMode === 1) ds.conn.row(node, row);
     for (let v = 0; v < n; v++) {
       vec3.set(tmp, geo[3 * v] - geo[3 * node], geo[3 * v + 1] - geo[3 * node + 1], geo[3 * v + 2] - geo[3 * node + 2]);
       vec3.transformMat3(tmp, tmp, rot);
@@ -345,7 +361,7 @@ export function bakeLittleBrains(input: GlyphBakeInput): Layer | null {
       const shade = sulc ? 1 - 0.45 * t0 * t0 * (3 - 2 * t0) : 1;
       let r = base[0] * shade * 255, g = base[1] * shade * 255, b = base[2] * shade * 255;
       if (p.lbColorMode === 1) {
-        const val = row[v];
+        const val = raw[node * n + v] * scale;
         if ((pos && val > input.threshold && val <= p.maxThreshold) || (neg && val < -input.threshold && val >= -p.maxThreshold)) {
           const t = Math.round(255 * Math.min(1, Math.max(0, (val - p.cmin) / (p.cmax - p.cmin || 1))));
           r = lut[4 * t]; g = lut[4 * t + 1]; b = lut[4 * t + 2];

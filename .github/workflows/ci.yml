@@ -44,3 +44,32 @@ jobs:
           python-version: "3.12"
       - run: pip install mkdocs-material
       - run: mkdocs build --strict
+
+  e2e:
+    name: Browser smoke test (headless Chrome, software WebGL)
+    runs-on: ubuntu-latest
+    # Software rendering on hosted runners is slow and occasionally flaky; a failure here is
+    # reported but does not block merging.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - run: npm run test:e2e
+        env:
+          CHROME_PATH: google-chrome
+
+  blender:
+    name: Blender import script (bpy module)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install bpy numpy
+      - run: python tests/blender/test_import.py

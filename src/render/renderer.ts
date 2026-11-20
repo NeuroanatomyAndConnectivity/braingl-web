@@ -405,6 +405,7 @@ export class GlyphRenderer {
     p.f("u_cmin", s.cmin);
     p.f("u_cmax", s.cmax === s.cmin ? s.cmin + 1e-6 : s.cmax);
     p.f("u_alphaExp", 10 * (1 - s.glyphAlpha));
+    p.f("u_alphaRef", Math.max(1, ds.conn.maxAbs));
     p.f("u_pointSize", Math.min(s.primSize, this.maxPointSize));
     p.f("u_lineWidth", s.primSize);
     p.v2("u_viewport", vp.w, vp.h);

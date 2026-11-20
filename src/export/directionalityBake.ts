@@ -75,9 +75,21 @@ export function bakeDirectionality(plyText: string, labelsText: string, orderTex
   const rgb = [params.arrowColorR * 255, params.arrowColorG * 255, params.arrowColorB * 255];
   for (let k = 0; k < m; k++) {
     const px = samples.positions[3 * k], py = samples.positions[3 * k + 1], pz = samples.positions[3 * k + 2];
-    const nx = samples.normals[3 * k], ny = samples.normals[3 * k + 1], nz = samples.normals[3 * k + 2];
+    let nx = samples.normals[3 * k], ny = samples.normals[3 * k + 1], nz = samples.normals[3 * k + 2];
+    const nl = Math.hypot(nx, ny, nz) || 1;
+    nx /= nl; ny /= nl; nz /= nl;
     let tx = samples.directions[3 * k], ty = samples.directions[3 * k + 1], tz = samples.directions[3 * k + 2];
     if (params.arrowFlipDirection) { tx = -tx; ty = -ty; tz = -tz; }
+    // The sampled direction is not exactly tangent to the surface at the sample. Project it into the
+    // tangent plane, so that the arrow lies flat (does not dip into the surface) and keeps its full width.
+    const along = tx * nx + ty * ny + tz * nz;
+    tx -= along * nx; ty -= along * ny; tz -= along * nz;
+    let tl = Math.hypot(tx, ty, tz);
+    if (tl < 1e-6) { // direction along the normal: any tangent will do
+      if (Math.abs(nx) < 0.9) { tx = 0; ty = -nz; tz = ny; } else { tx = -nz; ty = 0; tz = nx; }
+      tl = Math.hypot(tx, ty, tz);
+    }
+    tx /= tl; ty /= tl; tz /= tl;
     const sx = ny * tz - nz * ty, sy = nz * tx - nx * tz, sz = nx * ty - ny * tx;
     // centred on the sample, like the on-screen quad
     const ox = px + nx * lift - tx * length * 0.5, oy = py + ny * lift - ty * length * 0.5, oz = pz + nz * lift - tz * length * 0.5;

@@ -7,15 +7,15 @@ import {
 import { isWebManifest, loadWebGlyphset, urlGetter } from "../data/loadWeb";
 import { loadFromFiles } from "../data/loadFiles";
 import { parseRoiFile, writeRoi1D } from "../io";
-import { DrawState, GlyphRenderer, Viewport } from "../render/renderer";
+import { DrawState, GlyphRenderer, GlyphStyle, Viewport } from "../render/renderer";
 import { colormapLut, COLORMAP_NAMES, lutToCss } from "../render/colormaps";
-import { downloadBlob, hexToRgb, Panel } from "../ui/panel";
+import { downloadBlob, hexToRgb, niceStep, Panel, stepDigits } from "../ui/panel";
 import {
   averageConnectivity, buildConnexels, buildDiffConnexels, BuildFilter, computePieRanks, ConnexelEdges, ConnexelSet,
   createConnexels, sortForPies,
 } from "./builders";
 import { brushNodes, meanEdgeLength, pickNode } from "./picking";
-import { defaultGlyphParams, GlyphParams } from "./params";
+import { defaultGlyphParams, GlyphParams, lengthSurfaceIndex, valueUnit } from "./params";
 import { defaultBundlingOptions, Polylines } from "../algorithms/meanShiftBundling";
 import type { BundlingResponse } from "../algorithms/bundlingWorker";
 import { writeCxls, writeFibVtk } from "../algorithms/connexelFiles";
@@ -23,6 +23,38 @@ import type { GlyphBakeInput } from "../export/bake";
 import type { SceneCamera } from "../export/blenderBundle";
 
 const STORAGE = "braingl.glyphs";
+
+/**
+ * On macOS ctrl-click is the system's secondary click (and some browsers report it as the right
+ * button), so ctrl cannot also mean "paint" there: option (alt) takes that role.
+ */
+const IS_MAC = ((): boolean => {
+  if (typeof navigator === "undefined") return false;
+  const uad = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData;
+  return /mac|iphone|ipad|ipod/i.test(uad?.platform || navigator.platform || "");
+})();
+const PAINT_GESTURE = IS_MAC ? "option + right-drag" : "ctrl + right-drag";
+
+/** Parameters with a closed set of values (checked when settings come from storage or a scene file). */
+const CHOICES: Partial<Record<keyof GlyphParams, readonly unknown[]>> = {
+  hemi: [0, 1, 2],
+  glyphStyle: ["points", "vectors", "pies", "diffpoints", "off"],
+  glyphColorMode: [0, 1],
+  sign: [0, 1, 2],
+  tool: ["navigate", "seed", "paint", "erase"],
+  glyphNodes: ["all", "painted"],
+  lbColorMode: [0, 1, 2],
+  lineColorMode: [0, 1],
+  colormap: COLORMAP_NAMES,
+};
+
+/** Parameters that size buffers: kept within the range of their sliders. */
+const LIMITS: Partial<Record<keyof GlyphParams, [number, number]>> = {
+  budgetM: [0.5, 40],
+  lbMax: [1, 2000],
+  maxConnexels: [100, 40000],
+  screenshotScale: [1, 8],
+};
 
 /** What the glyph workspace can hand to other workspaces / exporters. */
 export interface SurfaceExport {
@@ -80,6 +112,9 @@ export class GlyphApp {
   private pieStats = { maxCount: 0, visible: 0 };
   private diffCount = -1;
   private diffThreshold = 0;
+  /** threshold / minimum length to put back when the difference-glyph style is left */
+  private diffRestore: { threshold: number; minLength: number } | null = null;
+  private styleShown: GlyphStyle = "points";
   private dirtyBuild = true;
   private dirtyRanks = true;
   private dirtyLittle = true;
@@ -93,10 +128,14 @@ export class GlyphApp {
   private needsDraw = true;
   private raf = 0;
   private saveTimer = 0;
+  private errorHtml = "";
+  private errorTimer = 0;
   private shotScale = 1;
 
   constructor(private readonly viewHost: HTMLElement, panelHost: HTMLElement, private readonly hooks: GlyphAppHooks = {}) {
     this.params = { ...defaultGlyphParams, ...loadStored<Partial<GlyphParams>>(STORAGE + ".params"), tool: "navigate" };
+    this.sanitizeParams();
+    this.styleShown = this.params.glyphStyle;
     this.canvas = document.createElement("canvas");
     this.canvas.className = "view-canvas";
     viewHost.appendChild(this.canvas);
@@ -136,10 +175,15 @@ export class GlyphApp {
 
   private persist(): void {
     clearTimeout(this.saveTimer);
-    this.saveTimer = window.setTimeout(() => {
-      store(STORAGE + ".params", this.params);
-      if (this.ds) store(STORAGE + ".cams." + this.ds.n, this.cams.map((c) => c.getState()));
-    }, 300);
+    this.saveTimer = window.setTimeout(() => this.persistNow(), 300);
+  }
+
+  private persistNow(): void {
+    clearTimeout(this.saveTimer);
+    // the temporary values of the difference-glyph style are never stored: a later session would not know what to restore
+    const r = this.diffRestore;
+    store(STORAGE + ".params", r ? { ...this.params, threshold: r.threshold, minLength: r.minLength } : this.params);
+    if (this.ds) store(STORAGE + ".cams." + this.ds.n, this.cams.map((c) => c.getState()));
   }
 
   // ---------------------------------------------------------------- loading
@@ -177,11 +221,16 @@ export class GlyphApp {
   private fail(e: unknown): void {
     console.error(e);
     this.progress(null);
-    this.statusEl.innerHTML = `<span class="err">${escapeHtml(e instanceof Error ? e.message : String(e))}</span>`;
+    // kept for a few seconds: the status line is rewritten on every redraw, which would wipe the message at once
+    this.errorHtml = `<span class="err">${escapeHtml(e instanceof Error ? e.message : String(e))}</span>`;
+    this.statusEl.innerHTML = this.errorHtml;
+    clearTimeout(this.errorTimer);
+    this.errorTimer = window.setTimeout(() => { this.errorHtml = ""; this.invalidate(); }, 8000);
   }
 
   private progress(msg: string | null, fraction?: number): void {
-    this.progressEl.style.display = msg ? "" : "none";
+    // the style sheet hides the box by default, so "" would leave it hidden
+    this.progressEl.style.display = msg ? "block" : "none";
     if (!msg) return;
     (this.progressEl.firstChild as HTMLElement).textContent = msg;
     const bar = this.progressEl.querySelector<HTMLElement>(".hud-progress-bar > div")!;
@@ -215,25 +264,31 @@ export class GlyphApp {
     this.renderer.setSegments(null, 0);
 
     const ns = ds.surfaces.length;
-    const clampIdx = (v: number, fallback: number) => (Number.isInteger(v) && v >= 0 && v < ns ? v : fallback);
     const stored = loadStored<CameraState[]>(STORAGE + ".cams." + ds.n);
+    // judge the remembered threshold / minimum length, not the temporary ones of the difference glyphs
+    this.leaveDiffStyle();
     if (!sameShape || !stored) {
       // sensible defaults for a new kind of dataset: glyphs on the inflated surface, shaped and coloured by the pial one
       p.surface = surfaceIndexByName(ds, ["inflated"], Math.min(1, ns - 1));
       p.secondSurface = surfaceIndexByName(ds, ["pial", "midthickness", "white"], 0);
       p.glyphGeometry = p.colorSurface = p.lengthSurface = p.secondSurface;
       p.glyphRadius = Math.min(0.2, Math.max(0.002, +(0.0042 * meanEdgeLength(ds.surfaces[p.surface].positions, this.topo.edges)).toFixed(4)));
-    } else {
-      p.surface = clampIdx(p.surface, 0);
-      p.secondSurface = clampIdx(p.secondSurface, 0);
-      p.colorSurface = clampIdx(p.colorSurface, 0);
-      p.lengthSurface = clampIdx(p.lengthSurface, 0);
-      if (p.glyphGeometry !== -1 || !this.sphere) p.glyphGeometry = clampIdx(p.glyphGeometry, 0);
     }
-    if (p.surfaceColorMode.startsWith("overlay:") && !ds.overlays.some((o) => "overlay:" + o.name === p.surfaceColorMode)) p.surfaceColorMode = "sulc";
+    // Thresholds and the colour range are remembered in the units of the matrix they were chosen for
+    // (1 for correlations). A matrix in other units starts from the defaults scaled to its range.
+    const maxAbs = ds.conn.maxAbs;
+    const unit = valueUnit(maxAbs);
+    const prevUnit = loadStored<number>(STORAGE + ".unit") ?? 1;
+    if (!(Math.abs(prevUnit - unit) <= 1e-3 * unit)) {
+      p.threshold = defaultGlyphParams.threshold * unit;
+      p.cmin = defaultGlyphParams.cmin * unit;
+      p.cmax = defaultGlyphParams.cmax * unit;
+      p.seedLower = defaultGlyphParams.seedLower * unit;
+    }
+    store(STORAGE + ".unit", unit);
     if (minThreshold !== null) p.threshold = Math.max(p.threshold, minThreshold);
-    p.threshold = Math.min(p.threshold, ds.conn.maxAbs);
-    p.maxThreshold = maxThreshold !== null ? Math.min(maxThreshold, ds.conn.maxAbs) : ds.conn.maxAbs;
+    p.maxThreshold = maxThreshold !== null ? maxThreshold : maxAbs;
+    this.sanitizeParams();
     if (roi) {
       for (let i = 0; i < ds.n; i++) if (roi[i]) this.labels[i] = 1;
       this.labelColors = [p.paintColor];
@@ -241,13 +296,98 @@ export class GlyphApp {
       this.refreshPaint();
     }
     this.frameCameras();
-    if (stored && stored.length === 2 && sameShape) this.cams.forEach((c, i) => c.setState(stored[i]));
+    if (stored && stored.length === 2 && sameShape) this.cams.forEach((c, i) => { if (isCameraState(stored[i])) c.setState(stored[i]); });
     this.updateOverlay();
+    this.styleShown = p.glyphStyle;
+    if (p.glyphStyle === "diffpoints") this.enterDiffStyle();
     this.dirtyBuild = this.dirtyLittle = true;
+    this.errorHtml = "";
     this.progress(null);
     this.dropEl.style.display = "none";
     this.panel.refresh();
+    this.persistNow();
     this.invalidate();
+  }
+
+  /**
+   * Bring the parameters into what the loaded dataset allows. Settings come from the previous
+   * session, from a scene file or from another dataset, so nothing in them may be trusted to
+   * index an existing surface or to lie within the value range of the matrix.
+   */
+  private sanitizeParams(): void {
+    const p = this.params;
+    const rec = p as unknown as Record<string, unknown>;
+    const def = defaultGlyphParams as unknown as Record<string, unknown>;
+    for (const k of Object.keys(def)) {
+      const v = rec[k];
+      if (typeof v !== typeof def[k] || (typeof v === "number" && !Number.isFinite(v))) rec[k] = def[k];
+    }
+    for (const [k, allowed] of Object.entries(CHOICES)) if (!allowed.includes(rec[k])) rec[k] = def[k];
+    for (const [k, [lo, hi]] of Object.entries(LIMITS)) rec[k] = Math.min(hi, Math.max(lo, rec[k] as number));
+    p.minLength = Math.max(0, p.minLength);
+    const ds = this.ds;
+    if (!ds) return;
+    const ns = ds.surfaces.length;
+    const idx = (v: number) => (Number.isInteger(v) && v >= 0 && v < ns ? v : 0);
+    p.surface = idx(p.surface);
+    p.secondSurface = idx(p.secondSurface);
+    p.colorSurface = idx(p.colorSurface);
+    if (p.lengthSurface !== -1) p.lengthSurface = idx(p.lengthSurface);
+    if (p.glyphGeometry !== -1 || !this.sphere) p.glyphGeometry = idx(p.glyphGeometry);
+    const m = p.surfaceColorMode;
+    if (m.startsWith("overlay:") ? !ds.overlays.some((o) => "overlay:" + o.name === m) : !["sulc", "solid", "seed"].includes(m)) p.surfaceColorMode = "sulc";
+    const maxAbs = ds.conn.maxAbs;
+    if (p.threshold < 0) p.threshold = 0;
+    if (p.threshold >= maxAbs) p.threshold = 0.5 * maxAbs; // nothing would be drawn
+    if (!(p.maxThreshold > 0 && p.maxThreshold <= maxAbs)) p.maxThreshold = maxAbs;
+    const lim = this.colorLimit();
+    p.cmin = Math.min(lim, Math.max(-lim, p.cmin));
+    p.cmax = Math.min(lim, Math.max(-lim, p.cmax));
+    p.seedLower = Math.min(lim, Math.max(0, p.seedLower));
+  }
+
+  /** Slider step for values of the matrix: 0.01 for correlations, about a hundredth of the range otherwise. */
+  private valueStep(): number {
+    return niceStep(valueUnit(this.ds?.conn.maxAbs ?? 1) / 100);
+  }
+
+  /** Range of the colour-map sliders: +-1 for correlations, +-(largest |value|, rounded up to a step) otherwise. */
+  private colorLimit(): number {
+    const maxAbs = this.ds?.conn.maxAbs ?? 1;
+    if (valueUnit(maxAbs) === 1) return 1;
+    const step = this.valueStep();
+    return Number((Math.ceil(maxAbs / step - 1e-9) * step).toPrecision(12));
+  }
+
+  /** A matrix value with as many decimals as its scale needs (two for correlations). */
+  private fmtValue(v: number): string {
+    return v.toFixed(stepDigits(this.valueStep()));
+  }
+
+  /**
+   * Differences between neighbouring profiles are much smaller than the connections themselves, and
+   * the minimum length would hide the local ones: switching to difference glyphs with a threshold
+   * meant for connections shows nothing. Start from usable values and remember what to put back.
+   */
+  private enterDiffStyle(): void {
+    const p = this.params, ds = this.ds;
+    if (!ds || this.diffRestore) return;
+    const maxAbs = ds.conn.maxAbs;
+    if (p.threshold > 0.3 * maxAbs) {
+      this.diffRestore = { threshold: p.threshold, minLength: p.minLength };
+      p.threshold = 0.2 * maxAbs;
+      p.minLength = 0;
+      this.dirtyRanks = true;
+    }
+  }
+
+  private leaveDiffStyle(): void {
+    const r = this.diffRestore;
+    if (!r) return;
+    this.diffRestore = null;
+    this.params.threshold = r.threshold;
+    this.params.minLength = r.minLength;
+    this.dirtyRanks = true;
   }
 
   private frameCameras(): void {
@@ -316,7 +456,7 @@ export class GlyphApp {
     if (p.glyphStyle === "pies") {
       const key = `${p.colorSurface}|${p.glyphColorMode}`;
       const rankParams = { threshold: this.effectiveThreshold(), maxThreshold: p.maxThreshold, minLength: p.minLength, sign: p.sign };
-      const lenPos = ds.surfaces[p.lengthSurface].positions;
+      const lenPos = ds.surfaces[lengthSurfaceIndex(p)].positions;
       if (!this.pieData || this.pieKey !== key) {
         this.pieData = sortForPies(this.set, ds.n, ds.surfaces[p.colorSurface].positions, p.glyphColorMode === 1);
         this.pieKey = key;
@@ -389,7 +529,7 @@ export class GlyphApp {
       surface: view === 1 ? p.secondSurface : p.surface,
       glyphSurface: polar ? p.colorSurface : p.glyphGeometry,
       colorSurface: p.colorSurface,
-      lengthSurface: p.lengthSurface,
+      lengthSurface: lengthSurfaceIndex(p),
       sphereSurface: this.sphere ? this.sphere.surface : -1,
       sphereCenterL: this.sphere?.centerL ?? [0, 0, 0],
       sphereCenterR: this.sphere?.centerR ?? [0, 0, 0],
@@ -469,13 +609,14 @@ export class GlyphApp {
     if (!ds) return;
     const p = this.params;
     const parts: string[] = [`<b>${escapeHtml(ds.name)}</b> · ${ds.n.toLocaleString()} nodes`];
+    const sym = valueUnit(ds.conn.maxAbs) === 1 ? "|r|" : "|value|";
     if (p.showGlyphs && p.glyphStyle !== "off") {
       if (p.glyphStyle === "diffpoints") {
-        parts.push(`${fmtCount(Math.max(0, this.diffCount))} edge–target pairs on GPU (|r| ≥ ${this.diffThreshold.toFixed(2)})`);
+        parts.push(`${fmtCount(Math.max(0, this.diffCount))} edge–target pairs on GPU (${sym} ≥ ${this.fmtValue(this.diffThreshold)})`);
       } else if (this.set && this.cum) {
         const shown = p.glyphStyle === "pies" ? this.pieStats.visible : Math.round(fractionAbove(this.cum, ds.conn.maxAbs, this.effectiveThreshold()) * this.cum[0]);
-        parts.push(`${fmtCount(shown)} connexels ${p.glyphStyle === "pies" ? "shown" : "above threshold"} · ${fmtCount(this.set.count)} on GPU (|r| ≥ ${this.buildThreshold.toFixed(2)})`);
-        if (p.threshold < this.buildThreshold - 1e-6) parts.push(`<span class="warn">threshold limited to ${this.buildThreshold.toFixed(2)} by the connexel budget</span>`);
+        parts.push(`${fmtCount(shown)} connexels ${p.glyphStyle === "pies" ? "shown" : "above threshold"} · ${fmtCount(this.set.count)} on GPU (${sym} ≥ ${this.fmtValue(this.buildThreshold)})`);
+        if (p.threshold < this.buildThreshold - 1e-6) parts.push(`<span class="warn">threshold limited to ${this.fmtValue(this.buildThreshold)} by the connexel budget</span>`);
         if (p.glyphNodes === "painted" && this.set.count === 0) parts.push(`<span class="warn">paint a region to create glyphs</span>`);
       }
     }
@@ -485,11 +626,11 @@ export class GlyphApp {
       parts.push(`node ${c} (${pos[3 * c].toFixed(0)}, ${pos[3 * c + 1].toFixed(0)}, ${pos[3 * c + 2].toFixed(0)})`);
     }
     if (buildMs > 250) parts.push(`${Math.round(buildMs)} ms`);
-    this.statusEl.innerHTML = parts.join(" &nbsp;·&nbsp; ");
+    this.statusEl.innerHTML = this.errorHtml || parts.join(" &nbsp;·&nbsp; ");
     const lut = colormapLut(p.colormap);
     const showLegend = p.glyphColorMode === 1 || p.secondView || p.surfaceColorMode === "seed";
     this.legendEl.style.display = showLegend ? "" : "none";
-    this.legendEl.innerHTML = `<span>${p.cmin.toFixed(2)}</span><div style="background:${lutToCss(lut)}"></div><span>${p.cmax.toFixed(2)}</span>`;
+    this.legendEl.innerHTML = `<span>${this.fmtValue(p.cmin)}</span><div style="background:${lutToCss(lut)}"></div><span>${this.fmtValue(p.cmax)}</span>`;
   }
 
   // ------------------------------------------------------------ interaction
@@ -589,8 +730,11 @@ export class GlyphApp {
       const right = e.button === 2 || (e.button === 0 && e.ctrlKey);
       let mode: NonNullable<typeof drag>["mode"];
       if (right) {
-        // brainGL: right click = select node; ctrl + right = paint; ctrl + shift + right = erase
-        mode = e.button === 2 && e.ctrlKey ? (e.shiftKey ? "erase" : "paint") : e.altKey ? (e.shiftKey ? "erase" : "paint") : "seed";
+        // brainGL: right click = select node; ctrl + right = paint; ctrl + shift + right = erase.
+        // On macOS ctrl-click *is* the right click (button 0 or 2 depending on the browser), so it
+        // always selects a node there and painting takes option (alt), which works everywhere.
+        const paint = e.altKey || (!IS_MAC && e.button === 2 && e.ctrlKey);
+        mode = paint ? (e.shiftKey ? "erase" : "paint") : "seed";
       } else if (e.button === 1 || (e.button === 0 && e.shiftKey && tool === "navigate")) {
         mode = "pan";
       } else if (e.button === 0 && tool !== "navigate" && !e.metaKey) {
@@ -690,8 +834,9 @@ export class GlyphApp {
     if (!ds) return;
     this.ensureGlyphs();
     const p = this.params;
-    const thr = Math.max(p.threshold, ds.conn.maxAbs * 0.02);
-    this.connexels = createConnexels(ds.conn, this.filter(thr), ds.surfaces[p.surface].positions, ds.surfaces[p.lengthSurface].positions, p.minLength, p.maxConnexels);
+    // never below the threshold in effect on screen (the connexel budget may have raised it)
+    const thr = Math.max(this.effectiveThreshold(), ds.conn.maxAbs * 0.02);
+    this.connexels = createConnexels(ds.conn, this.filter(thr), ds.surfaces[p.surface].positions, ds.surfaces[lengthSurfaceIndex(p)].positions, p.minLength, p.maxConnexels);
     this.bundles = null;
     this.uploadSegments();
     p.showConnections = true;
@@ -814,7 +959,8 @@ export class GlyphApp {
     const hCss = Math.max(1, this.viewHost.clientHeight);
     return {
       bake: {
-        ds, topo, sphere: this.sphere, params: this.params, glyphNodes: this.glyphNodes, threshold: this.effectiveThreshold(),
+        ds, topo, sphere: this.sphere, params: this.params, glyphNodes: this.glyphNodes, targets: this.targets,
+        threshold: this.effectiveThreshold(), buildThreshold: this.buildThreshold, budget: this.params.budgetM * 1e6,
         labels: this.labels, labelColors: this.labelColors, seedRow: this.cursorNode >= 0 || this.seedIsAverage ? this.seedRow : null,
         cursorNode: this.cursorNode, lines: this.currentLines(),
         primRadius: Math.max(0.03, 0.5 * this.params.primSize * cam.mmPerPixel(hCss)), maxPrims,
@@ -839,15 +985,24 @@ export class GlyphApp {
   private async loadScene(file: File): Promise<void> {
     try {
       const s = JSON.parse(await file.text());
-      if (s.format !== "braingl-web-scene") throw new Error("not a brainGL-web scene file");
-      Object.assign(this.params, defaultGlyphParams, s.params);
-      if (Array.isArray(s.cameras)) this.cams.forEach((c, i) => s.cameras[i] && c.setState(s.cameras[i]));
+      if (!s || s.format !== "braingl-web-scene") throw new Error("not a brainGL-web scene file");
+      // only known parameters are taken, and they are checked against the loaded dataset exactly as
+      // after loading one: the scene may have been saved with other surfaces or another matrix
+      const rec = this.params as unknown as Record<string, unknown>;
+      Object.assign(rec, defaultGlyphParams);
+      if (s.params && typeof s.params === "object") {
+        for (const k of Object.keys(defaultGlyphParams)) if (k in s.params) rec[k] = s.params[k];
+      }
+      this.diffRestore = null; // the scene's values are what was on screen
+      this.sanitizeParams();
+      this.styleShown = this.params.glyphStyle;
+      if (Array.isArray(s.cameras)) this.cams.forEach((c, i) => { if (isCameraState(s.cameras[i])) c.setState(s.cameras[i]); });
       if (this.ds && s.nodes === this.ds.n && typeof s.labels === "string") {
         const bytes = Uint8Array.from(atob(s.labels), (ch) => ch.charCodeAt(0));
         this.labels = unrle(bytes, this.ds.n);
-        this.labelColors = s.labelColors ?? [];
+        this.labelColors = Array.isArray(s.labelColors) ? s.labelColors.filter((c: unknown) => typeof c === "string").slice(0, 255) : [];
         this.refreshPaint();
-        if (s.cursorNode >= 0) this.selectNode(s.cursorNode);
+        if (Number.isInteger(s.cursorNode) && s.cursorNode >= 0) this.selectNode(s.cursorNode);
       }
       this.renderer.setLut(colormapLut(this.params.colormap));
       this.updateOverlay();
@@ -864,7 +1019,10 @@ export class GlyphApp {
 
   /** Change parameters programmatically (console: `braingl.glyphs.setParams({ glyphStyle: "pies" })`). */
   setParams(patch: Partial<GlyphParams>): void {
-    for (const k of Object.keys(patch) as (keyof GlyphParams)[]) {
+    // the style first: it may replace the threshold and minimum length (difference glyphs), which
+    // values given in the same call must override
+    const keys = (Object.keys(patch) as (keyof GlyphParams)[]).sort((a, b) => Number(b === "glyphStyle") - Number(a === "glyphStyle"));
+    for (const k of keys) {
       (this.params as unknown as Record<string, unknown>)[k] = patch[k];
       this.afterChange(k);
     }
@@ -912,8 +1070,10 @@ export class GlyphApp {
     const tool = (t: GlyphParams["tool"]) => () => { this.params.tool = t; this.afterChange("tool"); };
     group([
       ["Navigate", "Drag to rotate, shift-drag to pan, scroll to zoom (N)", tool("navigate"), () => this.params.tool === "navigate"],
-      ["Seed", "Click or drag on the surface to select a node and show its connectivity (S). Right-click works in any mode.", tool("seed"), () => this.params.tool === "seed"],
-      ["Paint", "Drag to paint a region; shift-drag erases (P). brainGL style: ctrl + right-drag.", tool("paint"), () => this.params.tool === "paint"],
+      ["Seed", "Click or drag on the surface to select a node and show its connectivity (S). Right-click or ctrl-click selects a node with any tool.", tool("seed"), () => this.params.tool === "seed"],
+      ["Paint", "Drag to paint a region; shift-drag erases (P). " + (IS_MAC
+        ? "With any tool: option + right-drag paints, option + shift + right-drag erases."
+        : "With any tool, as in brainGL: ctrl + right-drag paints, ctrl + shift + right-drag erases (alt works in place of ctrl)."), tool("paint"), () => this.params.tool === "paint"],
       ["Erase", "Drag to erase paint (E)", tool("erase"), () => this.params.tool === "erase"],
     ]);
     const views: [string, CanonicalView, string][] = [["L", "left", "Left lateral"], ["R", "right", "Right lateral"], ["A", "anterior", "Anterior"], ["P", "posterior", "Posterior"], ["D", "dorsal", "Dorsal"], ["V", "ventral", "Ventral"]];
@@ -928,7 +1088,7 @@ export class GlyphApp {
   private refreshToolbar(): void {
     this.toolbarEl.querySelectorAll("button").forEach((b) => {
       const f = (b as HTMLButtonElement & { isActive?: () => boolean }).isActive;
-      if (f) b.classList.toggle("active", f());
+      if (f) { b.classList.toggle("active", f()); b.setAttribute("aria-pressed", String(f())); }
     });
     this.canvas.style.cursor = this.params.tool === "navigate" ? "grab" : "crosshair";
   }
@@ -962,7 +1122,18 @@ export class GlyphApp {
           const zoom = this.cams[k].halfHeight / (this.cams[k].sceneRadius || 1);
           this.cams[k].frame(b.center, b.radius);
           this.cams[k].halfHeight = Math.min(zoom, 1.05) * b.radius;
-            }
+        }
+        // the minimum length follows the displayed surface when it is measured there
+        if (key === "surface" && p.lengthSurface === -1) this.dirtyRanks = true;
+        break;
+      }
+      case "glyphStyle": {
+        if (p.glyphStyle !== this.styleShown) {
+          if (p.glyphStyle === "diffpoints") this.enterDiffStyle();
+          else if (this.styleShown === "diffpoints") this.leaveDiffStyle();
+          this.styleShown = p.glyphStyle;
+          this.panel.refresh(); // threshold and minimum length may have changed
+        }
         break;
       }
       default: break;
@@ -1035,27 +1206,35 @@ export class GlyphApp {
       .slider("rotZ", "z rotation", { min: 0, max: 360, step: 1, visible: () => p.rotationEnabled && p.glyphStyle !== "pies" && p.glyphGeometry !== -1 })
       .slider("depthLift", "Lift off surface", { min: 0, max: 8, step: 0.1, tip: "Glyphs are moved toward the viewer by this many glyph radii so that they are not buried in the folded surface." });
 
+    // Ranges and steps follow the matrix: correlations keep 0..1 in steps of 0.005, other weights
+    // get their own largest |value| and a step of about a two-hundredth of it.
     const maxAbs = () => this.ds?.conn.maxAbs ?? 1;
+    const thresholdStep = () => niceStep(valueUnit(maxAbs()) / 200);
+    const valueStep = () => this.valueStep();
+    const colorLimit = () => this.colorLimit();
     panel.section("Thresholds")
-      .slider("threshold", "Threshold", { min: 0, max: maxAbs, step: 0.005, digits: 3, tip: "Only connections stronger than this are drawn. For diffpoints: minimum difference between neighbouring profiles." })
+      .slider("threshold", "Threshold", { min: 0, max: maxAbs, step: thresholdStep, tip: "Only connections stronger than this are drawn. For diffpoints: minimum difference between neighbouring profiles." })
       .select("sign", "Sign", () => [[0, "+"], [1, "−"], [2, "+ / −"]])
       .slider("minLength", "Minimum length (mm)", { min: 0, max: 150, step: 1, tip: "Remove short connections to reveal long-range structure." })
-      .select("lengthSurface", "Length measured on", surfaces, { visible: () => p.minLength > 0 })
-      .slider("maxThreshold", "Upper threshold", { min: 0, max: maxAbs, step: 0.005, digits: 3 })
+      .select("lengthSurface", "Length measured on", () => [...surfaces(), [-1, "displayed surface (as in brainGL)"]], {
+        visible: () => p.minLength > 0,
+        tip: "Surface in which the length of a connection is measured. brainGL measured it in the displayed surface, so the selection changed with the view; a fixed anatomical surface keeps it the same on every surface.",
+      })
+      .slider("maxThreshold", "Upper threshold", { min: 0, max: maxAbs, step: thresholdStep })
       .slider("budgetM", "Connexel budget (millions)", { min: 0.5, max: 40, step: 0.5, lazy: true, tip: "Upper bound on the connexels sent to the graphics card, the equivalent of brainGL's load-time minimum threshold. Raise it on a strong GPU to reach lower thresholds." });
 
     const legend = el("div", "legend-bar");
     panel.section("Colour map")
       .select("colormap", "Colour map", () => COLORMAP_NAMES.map((n) => [n, n]))
       .custom(legend, { refresh: () => { legend.style.background = lutToCss(colormapLut(p.colormap)); } })
-      .slider("cmin", "Min", { min: -1, max: 1, step: 0.01 })
-      .slider("cmax", "Max", { min: -1, max: 1, step: 0.01 })
-      .slider("seedLower", "Surface map lower threshold", { min: 0, max: 1, step: 0.01, tip: "Seed-based connectivity weaker than this shows the anatomy instead." });
+      .slider("cmin", "Min", { min: () => -colorLimit(), max: colorLimit, step: valueStep })
+      .slider("cmax", "Max", { min: () => -colorLimit(), max: colorLimit, step: valueStep })
+      .slider("seedLower", "Surface map lower threshold", { min: 0, max: colorLimit, step: valueStep, tip: "Seed-based connectivity weaker than this shows the anatomy instead." });
 
     panel.section("Regions & painting")
       .note(() => {
         const k = this.labels.reduce((a, v) => a + (v ? 1 : 0), 0);
-        return k ? `${k.toLocaleString()} nodes painted in ${new Set(this.labels).size - (this.labels.includes(0) ? 1 : 0)} region(s).` : `<span class="dim">Paint regions with the Paint tool (or ctrl + right-drag). Each colour is one region.</span>`;
+        return k ? `${k.toLocaleString()} nodes painted in ${new Set(this.labels).size - (this.labels.includes(0) ? 1 : 0)} region(s).` : `<span class="dim">Paint regions with the Paint tool (or ${PAINT_GESTURE}). Each colour is one region.</span>`;
       })
       .slider("brushSize", "Brush size (mm)", { min: 1, max: 60, step: 0.5 })
       .color("paintColor", "Paint colour")
@@ -1108,7 +1287,7 @@ export class GlyphApp {
     const bridge: { label: string; onClick: () => void; tip?: string }[] = [];
     if (this.hooks.openInDirectionality) {
       bridge.push({
-        label: "Regions → Directionality", tip: "Open the displayed surface with the painted regions as a parcellation in the Directionality workspace.",
+        label: "Regions → Directionality", tip: "Open the displayed surface with the painted regions as a parcellation in the Directionality workspace. The direction field is derived at the borders that regions share, so arrows appear only where painted regions touch: paint at least two adjacent regions (different paint colours).",
         onClick: () => { const s = this.surfaceExport(); if (s) this.hooks.openInDirectionality!(s, "labels"); },
       });
       bridge.push({
@@ -1121,7 +1300,8 @@ export class GlyphApp {
       label: "Reset to defaults", onClick: () => {
         Object.assign(p, defaultGlyphParams);
         this.renderer.setLut(colormapLut(p.colormap));
-        try { localStorage.removeItem(STORAGE + ".dataset"); } catch { /* ignore */ }
+        this.diffRestore = null;
+        try { localStorage.removeItem(STORAGE + ".dataset"); localStorage.removeItem(STORAGE + ".unit"); } catch { /* ignore */ }
         if (this.ds) this.setDataset(this.ds, this.fileRoi, null, null, this.targets);
       },
     }]);
@@ -1179,6 +1359,12 @@ function fmtCount(n: number): string {
 
 function stamp(): string {
   return new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
+}
+
+function isCameraState(s: unknown): s is CameraState {
+  const c = s as CameraState | null;
+  const nums = (a: unknown, n: number) => Array.isArray(a) && a.length === n && a.every((v) => typeof v === "number" && Number.isFinite(v));
+  return !!c && typeof c === "object" && nums(c.rotation, 4) && nums(c.target, 3) && typeof c.halfHeight === "number" && c.halfHeight > 0 && Number.isFinite(c.halfHeight);
 }
 
 function loadStored<T>(key: string): T | null {

@@ -2,6 +2,8 @@
 
 This page is the same text as `CONTRIBUTING.md` at the repository root (the root file is the one that GitHub shows).
 
+brainGL web is a browser port of the connectivity glyphs of brainGL (by Ralph Schurade, with the glyph and bundling code by Joachim Böttger), refactored for the web browser by Daniel S. Margulies using Claude. The repository is <https://github.com/NeuroanatomyAndConnectivity/braingl-web>.
+
 ## Set up
 
 You need Node.js 20 or newer and npm. For the data tools and the documentation you also need Python 3.

@@ -10,6 +10,7 @@
  *   anticorrelated(ds)     between-module blocks become negative
  *   weighted(ds)           non-correlation weights with maxAbs = 5 and a zero diagonal
  *   directed(ds)           asymmetric variant (to catch row / column mix-ups in loaders)
+ *   withValues(ds, ...)    the mesh of a fixture with any other matrix and mask (used with real data)
  *
  * The serialisers that write a fixture into every on-disk layout are in
  * ./serialise.ts, brute-force reference implementations in ./reference.ts.
@@ -281,6 +282,17 @@ function derive(ds: FixtureDataset, suffix: string, values: Float32Array, mask: 
     conn: ConnMatrix.fromFull(values, ds.n),
     values,
   };
+}
+
+/**
+ * A fixture mesh carrying another matrix (and mask), e.g. a block of a real
+ * connectivity matrix: the serialisers of ./serialise.ts then write real
+ * values into every layout. `values` is row-major n * n.
+ */
+export function withValues(ds: FixtureDataset, suffix: string, values: Float32Array, mask: Uint8Array = ds.mask): FixtureDataset {
+  if (values.length !== ds.n * ds.n) throw new Error(`withValues: ${values.length} values for ${ds.n} nodes`);
+  if (mask.length !== ds.n) throw new Error(`withValues: mask has ${mask.length} entries for ${ds.n} nodes`);
+  return derive(ds, suffix, values, mask);
 }
 
 /** Nodes of the medial patch that withMedialWall() removes. */

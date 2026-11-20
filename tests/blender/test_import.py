@@ -16,9 +16,10 @@ byte layout of ``writePly`` in src/export/ply.ts) into a temporary folder and
 starts from an empty Blender file.  Expected values are closed forms computed
 here, not copies of what the importer returns.
 
-Cases decorated with ``@known_bug`` document defects of the importer: they are
-reported as XFAIL while the defect exists and FAIL once it is fixed, so that
-the mark gets removed.
+A defect of the importer that cannot be fixed at once can be documented with
+``@known_bug``: such a case is reported as XFAIL while the defect exists and as
+FAIL once it is fixed, so that the mark gets removed. (No case is marked at
+present.)
 """
 import contextlib
 import functools
@@ -35,6 +36,7 @@ import tempfile
 import time
 import traceback
 import unittest
+import warnings
 
 import numpy as np
 
@@ -806,24 +808,80 @@ def test_import_default_camera_is_a_left_lateral_orthographic_view():
     assert cam.data.clip_end > hi[0] - location[0]
 
 
-@known_bug("public/blender/import_braingl.py:285: the fallback camera (scene.json \"camera\": null, used by the "
-           "directionality exports) sets ortho_scale = 1.15 * largest bounding-box side, which is the image WIDTH; "
-           "with the 16:9 default the visible height is only 0.65 * that side, so a layer taller (z) than 0.65 * its "
-           "longest side - any brain: 175 mm long, 130 mm high -> 113 mm visible - is cropped at top and bottom")
+BRAIN_BOX = np.array([70, 87.5, 65], np.float32)      # half sizes with the proportions of a brain: 140 x 175 x 130 mm
+
+
+def _write_box_scene(folder, half, centre=(0, 0, 0)):
+    xyz = (OCT_V * np.asarray(half, np.float32) + np.asarray(centre, np.float32)).astype(np.float32)
+    write_ply(os.path.join(folder, "brain.ply"), xyz, np.full((6, 4), 255, np.uint8), faces=OCT_F)
+    with open(os.path.join(folder, "scene.json"), "w") as fh:
+        json.dump({"format": "braingl-blender-scene", "version": 1, "title": "brain", "units": "mm",
+                   "background": BACKGROUND, "camera": None,
+                   "layers": [layer_entry("brain.ply", "brain", "mesh", "lit", 6, smooth=True)]}, fh)
+    return xyz
+
+
+def _box_corners(xyz):
+    lo, hi = xyz.min(axis=0), xyz.max(axis=0)
+    return np.array([[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])])
+
+
+def _assert_framed(cam, corners, label):
+    """All corners inside the image, and the box fills the image in its tighter direction (margin <= 10 %)."""
+    uv = project(cam, corners)
+    assert uv[:, 0].min() >= 0 and uv[:, 0].max() <= 1, f"{label}: cropped horizontally: u in {uv[:, 0].min():.3f}..{uv[:, 0].max():.3f}"
+    assert uv[:, 1].min() >= 0 and uv[:, 1].max() <= 1, f"{label}: cropped vertically: v in {uv[:, 1].min():.3f}..{uv[:, 1].max():.3f}"
+    fill = max(np.ptp(uv[:, 0]), np.ptp(uv[:, 1]))
+    assert 0.9 <= fill <= 1.0, f"{label}: the scene fills only {fill:.2f} of the image"
+    assert approx(uv.mean(axis=0), [0.5, 0.5], 1e-4), f"{label}: not centred: {uv.mean(axis=0)}"
+
+
 def test_import_default_camera_shows_the_whole_scene():
+    """scene.json "camera": null (older directionality exports): at the 16:9 default a brain-shaped box
+    (175 mm long, 130 mm high) must not be cropped at the top and bottom."""
     fresh()
     with tempfile.TemporaryDirectory() as tmp:
-        # bounding box with the proportions of a brain: 140 x 175 x 130 mm
-        xyz = (OCT_V * np.array([70, 87.5, 65], np.float32)).astype(np.float32)
-        write_ply(os.path.join(tmp, "brain.ply"), xyz, np.full((6, 4), 255, np.uint8), faces=OCT_F)
-        with open(os.path.join(tmp, "scene.json"), "w") as fh:
-            json.dump({"format": "braingl-blender-scene", "version": 1, "title": "brain", "units": "mm",
-                       "background": BACKGROUND, "camera": None,
-                       "layers": [layer_entry("brain.ply", "brain", "mesh", "lit", 6, smooth=True)]}, fh)
+        xyz = _write_box_scene(tmp, BRAIN_BOX)
         ib.main([tmp])
-    uv = project(bpy.context.scene.camera, xyz)
-    assert uv[:, 0].min() >= 0 and uv[:, 0].max() <= 1, f"cropped horizontally: u in {uv[:, 0].min():.3f}..{uv[:, 0].max():.3f}"
-    assert uv[:, 1].min() >= 0 and uv[:, 1].max() <= 1, f"cropped vertically: v in {uv[:, 1].min():.3f}..{uv[:, 1].max():.3f}"
+    scene = bpy.context.scene
+    assert (scene.render.resolution_x, scene.render.resolution_y) == (1920, 1080)
+    _assert_framed(scene.camera, _box_corners(xyz), "brain box at 16:9")
+    # the box is limited by its height here: 130 mm of the 1080 rows, so less than the full width is used
+    uv = project(scene.camera, _box_corners(xyz))
+    assert np.ptp(uv[:, 1]) > np.ptp(uv[:, 0])
+
+
+def test_import_default_camera_frames_boxes_of_any_shape():
+    shapes = {"long": [40, 120, 20], "tall": [40, 30, 110], "deep": [150, 30, 30], "cube": [50, 50, 50], "off centre": [70, 87.5, 65]}
+    for label, half in shapes.items():
+        fresh()
+        with tempfile.TemporaryDirectory() as tmp:
+            xyz = _write_box_scene(tmp, half, centre=(12, -30, 45) if label == "off centre" else (0, 0, 0))
+            ib.main([tmp, "--resolution", "640"])
+        cam = bpy.context.scene.camera
+        _assert_framed(cam, _box_corners(xyz), label)
+        _, _, backward, location = camera_axes(cam)
+        assert approx(-backward, [1, 0, 0], 1e-6), label
+        assert location[0] < xyz[:, 0].min() - 1, label                         # the camera is outside the box
+
+
+def test_frame_left_lateral_for_other_aspects():
+    """The helper behind the fallback camera, for image shapes other than the 16:9 default."""
+    for aspect in (16 / 9, 1.0, 0.5, 2.4, 4 / 3):
+        for half in ([70, 87.5, 65], [40, 120, 20], [40, 30, 110]):
+            fresh()
+            with tempfile.TemporaryDirectory() as tmp:
+                xyz = _write_box_scene(tmp, half)
+                ib.import_scene(tmp)
+            cam = bpy.context.scene.camera
+            location, rotation, ortho_scale = ib.frame_left_lateral(xyz.min(axis=0), xyz.max(axis=0), aspect)
+            cam.location, cam.rotation_quaternion, cam.data.ortho_scale = location, rotation, ortho_scale
+            ib.setup_render(aspect, width=800)
+            _assert_framed(cam, _box_corners(xyz), f"aspect {aspect:.2f}, box {half}")
+            # closed form: visible height = ortho_scale / max(1, aspect), visible width = that * aspect
+            height = ortho_scale / max(1, aspect)
+            assert height >= 2 * half[2] and height * aspect >= 2 * half[1]
+            assert approx(min(height / (2 * half[2]), height * aspect / (2 * half[1])), 1.06, 1e-4)
 
 
 def test_import_headlight_follows_the_camera():
@@ -899,16 +957,51 @@ def test_import_twice_gives_the_same_objects_again():
     assert bpy.context.scene.camera.name == "brainGL camera"
 
 
-@known_bug("(minor) public/blender/import_braingl.py:204-209: a re-import removes the old objects but not the "
-           "collection they were in, so every run of the script leaves one more empty 'brainGL: <title>' "
-           "collection in the scene (and the new one is called '... .001', '.002', ...)")
 def test_import_twice_leaves_no_empty_collections():
     fresh()
     with scene_dir() as d:
         ib.main([d])
         ib.main([d])
+        ib.main([d])
     names = [c.name for c in bpy.context.scene.collection.children]
-    assert names == ["brainGL: unit test"], f"collections in the scene after two imports: {names}"
+    assert names == ["brainGL: unit test"], f"collections in the scene after three imports: {names}"
+    assert [c.name for c in bpy.data.collections] == ["brainGL: unit test"]
+
+
+def test_import_twice_leaves_no_orphan_datablocks():
+    """A re-import replaces the meshes, materials, node groups, camera and light of the previous run."""
+    fresh()
+    with scene_dir() as d:
+        ib.main([d])
+        first = {kind: sorted(b.name for b in getattr(bpy.data, kind)) for kind in ("meshes", "materials", "node_groups", "cameras", "lights")}
+        ib.main([d])
+        ib.main([d])
+    again = {kind: sorted(b.name for b in getattr(bpy.data, kind)) for kind in first}
+    assert again == first, again
+    assert first["materials"] == ["brainGL connections", "brainGL glyphs pies", "brainGL glyphs points", "brainGL surface pial"]
+    assert len(first["meshes"]) == 4 and len(first["node_groups"]) == 1 and len(first["cameras"]) == 1 and len(first["lights"]) == 1
+
+
+def test_reimport_keeps_datablocks_that_are_not_its_own():
+    fresh()
+    mine = bpy.data.materials.new("brainGL look-alike")        # unused, but not made by the importer
+    mesh = bpy.data.meshes.new("my mesh")
+    coll = bpy.data.collections.new("brainGL: my own")          # empty, but not made by the importer
+    bpy.context.scene.collection.children.link(coll)
+    with scene_dir() as d:
+        ib.main([d])
+        ib.main([d])
+    assert mine.name in bpy.data.materials and mesh.name in bpy.data.meshes
+    assert "brainGL: my own" in bpy.data.collections
+
+
+def test_import_keep_adds_a_second_collection():
+    fresh()
+    with scene_dir() as d:
+        ib.main([d])
+        ib.main([d, "--keep"])
+    assert len(bpy.context.scene.collection.children) == 2
+    assert len([o for o in bpy.context.scene.objects if o.type == "MESH"]) == 8
 
 
 def test_import_skips_empty_layers():
@@ -955,18 +1048,67 @@ def test_default_scene_dir_is_the_folder_of_the_script():
         assert "brainGL: next to the script" in bpy.data.collections
 
 
-@known_bug("public/blender/import_braingl.py:128-129: use_smooth is only written when the layer is smooth; since "
-           "Blender 4.1 faces of a new mesh are smooth by default, so \"smooth\": false layers (pies, arrows, "
-           "tubes, octahedra) come out smooth shaded (invisible with the emission material of flat layers, wrong "
-           "normals for a lit layer)",
-           strict=bpy.app.version >= (4, 1, 0))
 def test_import_flat_shaded_layers_have_sharp_faces():
     fresh()
     with scene_dir() as d:
         ib.import_scene(d, points_mode="mesh")
     for name in ("glyphs pies", "connections", "glyphs points"):               # all have "smooth": false
         mesh = bpy.data.objects[name].data
+        assert len(mesh.polygons) > 0
         assert not any(p.use_smooth for p in mesh.polygons), f"{name}: faces are smooth although the layer says smooth=false"
+    assert all(p.use_smooth for p in bpy.data.objects["surface pial"].data.polygons)      # "smooth": true
+
+
+def test_import_flat_layers_neither_light_nor_shade_the_anatomy():
+    """Emission is a light source in Cycles: data layers must be visible to the camera only."""
+    fresh()
+    with scene_dir() as d:
+        ib.import_scene(d)
+    for name, flat in (("surface pial", False), ("glyphs points", True), ("connections", True), ("glyphs pies", True)):
+        obj = bpy.data.objects[name]
+        assert obj.visible_camera, name
+        for prop in ("visible_diffuse", "visible_glossy", "visible_shadow"):
+            assert getattr(obj, prop) == (not flat), f"{name}.{prop}"
+
+
+def test_import_emits_no_deprecation_warnings():
+    """Material.use_nodes / World.use_nodes are deprecated in Blender 5.0 (and removed in 6.0)."""
+    fresh()
+    with scene_dir() as d, warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        ib.main([d])
+        ib.main([d, "--points", "mesh"])
+        ib.setup_render(1.5, width=320, cycles=True, samples=2)
+    messages = [f"{w.category.__name__}: {w.message}" for w in caught]
+    assert not messages, messages
+
+
+def test_import_background_into_an_existing_world():
+    """A world that is already in the file (other node names, colour driven by a texture) is reused."""
+    fresh()
+    world = bpy.data.worlds.new("existing")
+    bpy.context.scene.world = world
+    nt = ib.enable_nodes(world)
+    nt.nodes.clear()
+    out = nt.nodes.new("ShaderNodeOutputWorld")
+    bg = nt.nodes.new("ShaderNodeBackground")
+    bg.name = "Hintergrund"
+    sky = nt.nodes.new("ShaderNodeRGB")
+    nt.links.new(sky.outputs[0], bg.inputs["Color"])
+    nt.links.new(bg.outputs[0], out.inputs["Surface"])
+    with scene_dir() as d:
+        ib.import_scene(d)
+    assert bpy.context.scene.world == world
+    assert not bg.inputs["Color"].is_linked
+    expected = [((c + 0.055) / 1.055) ** 2.4 for c in BACKGROUND]
+    assert approx(list(bg.inputs["Color"].default_value)[:3], expected, 1e-6)
+    # ... and a world without any node gets a background
+    nt.nodes.clear()
+    with scene_dir() as d:
+        ib.import_scene(d)
+    made = [n for n in nt.nodes if n.bl_idname == "ShaderNodeBackground"]
+    assert len(made) == 1 and approx(list(made[0].inputs["Color"].default_value)[:3], expected, 1e-6)
+    assert any(l.from_node == made[0] and l.to_node.bl_idname == "ShaderNodeOutputWorld" for l in nt.links)
 
 
 # ============================================================ command line, render
@@ -1040,12 +1182,25 @@ def test_cli_render_default_engine():
         _check_render(png)
 
 
-@known_bug("public/blender/import_braingl.py:343 (documented at :20): the option is called --cycles, but Blender's "
-           "Cycles add-on parses everything after `--` itself with an abbreviating argparse (scripts/addons_core/"
-           "cycles/engine.py _parse_command_line: --cycles-print-stats, --cycles-device) and aborts with "
-           "'ambiguous option: --cycles could match --cycles-print-stats, --cycles-device' before the script runs",
-           strict=not IN_BLENDER_APP)      # verified with the bpy module 5.0.1; the application runs the same add-on code
+def test_cli_engine_cycles_option():
+    """... -- SCENE --render out.png --engine cycles: the documented way to choose Cycles."""
+    with tempfile.TemporaryDirectory() as tmp:
+        d = _render_scene(os.path.join(tmp, "scene"))
+        png = os.path.join(tmp, "cycles.png")
+        res = run_script_cli(SCRIPT, [d, "--render", png, "--engine", "cycles", "--samples", "4", "--resolution", "64"])
+        assert res.returncode == 0 and os.path.isfile(png), (res.stderr or res.stdout)[-300:].strip()
+        assert "Cycles" in res.stdout + res.stderr or "brainGL: rendered" in res.stdout
+        _check_render(png)
+
+
 def test_cli_cycles_option():
+    """The old spelling `--cycles`. Blender's Cycles add-on parses everything after `--` itself with an
+    abbreviating argparse (scripts/addons_core/cycles/engine.py, _parse_command_line: --cycles-print-stats,
+    --cycles-device) and used to abort with "ambiguous option: --cycles could match ..." when bpy was imported.
+    The script now renames the flag before that import; inside the Blender application the add-on is
+    registered before any script runs, so only `--engine cycles` can work there."""
+    if IN_BLENDER_APP:
+        raise Skip("the Blender application rejects --cycles itself; use --engine cycles")
     with tempfile.TemporaryDirectory() as tmp:
         d = _render_scene(os.path.join(tmp, "scene"))
         png = os.path.join(tmp, "cycles.png")
@@ -1053,6 +1208,134 @@ def test_cli_cycles_option():
         assert "ambiguous option" not in res.stderr + res.stdout, (res.stderr or res.stdout)[-300:].strip()
         assert res.returncode == 0 and os.path.isfile(png), (res.stderr or res.stdout)[-300:].strip()
         _check_render(png)
+
+
+def test_cli_passes_blenders_own_cycles_options_through():
+    """`--cycles-device CPU` after the `--` belongs to Blender; the script must not stumble over it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        d = _render_scene(os.path.join(tmp, "scene"))
+        png = os.path.join(tmp, "cycles.png")
+        res = run_script_cli(SCRIPT, [d, "--render", png, "--engine", "cycles", "--cycles-device", "CPU", "--samples", "2", "--resolution", "64"])
+        assert res.returncode == 0 and os.path.isfile(png), (res.stderr or res.stdout)[-300:].strip()
+
+
+def test_cli_rejects_unknown_options():
+    with scene_dir() as d:
+        res = run_script_cli(SCRIPT, [d, "--no-such-option"])
+    assert res.returncode != 0
+    assert "--no-such-option" in res.stderr + res.stdout
+
+
+def test_rename_cycles_option():
+    cases = [
+        (["x.py", "--", "scene", "--cycles", "--samples", "8"], ["x.py", "--", "scene", "--engine", "cycles", "--samples", "8"]),
+        (["blender", "--cycles", "--", "scene"], ["blender", "--cycles", "--", "scene"]),               # only after the `--`
+        (["x.py", "--", "--cycles-device", "CPU", "--cycles"], ["x.py", "--", "--cycles-device", "CPU", "--engine", "cycles"]),
+        (["x.py", "--cycles"], ["x.py", "--cycles"]),                                                    # no `--`: nothing of ours
+        (["x.py", "--"], ["x.py", "--"]),
+    ]
+    for argv, expected in cases:
+        got = list(argv)
+        ib._rename_cycles_option(got)
+        assert got == expected, (argv, got)
+
+
+def test_main_engine_selection():
+    fresh()
+    with scene_dir() as d:
+        for args, engine in (([], "eevee"), (["--engine", "eevee"], "eevee"), (["--engine", "cycles"], "cycles"), (["--cycles"], "cycles")):
+            ib.main([d, *args])
+            got = bpy.context.scene.render.engine
+            assert (got == "CYCLES") == (engine == "cycles"), (args, got)
+            assert got in ("CYCLES", "BLENDER_EEVEE", "BLENDER_EEVEE_NEXT")
+
+
+# ------------------------------------------------- what the renderer makes of it
+POINT_RGB = (40, 180, 230)
+INSIDE_RGB = (200, 100, 50)
+
+
+def _look_scene(folder, opacity=0.25):
+    """100 mm x 100 mm view along +y with, from left to right:
+    a point glyph of radius 12 mm, a lit green rectangle, and a flat rectangle behind a transparent lit white one."""
+    def quad(x0, x1, y, z=18):
+        return np.array([[x0, y, -z], [x1, y, -z], [x1, y, z], [x0, y, z]], np.float32), [[0, 1, 2], [0, 2, 3]]
+    os.makedirs(folder, exist_ok=True)
+    write_ply(os.path.join(folder, "point.ply"), [[-32, 0, 0]], [[*POINT_RGB, 255]], kind="points")
+    v, f = quad(-12, 8, 0)
+    write_ply(os.path.join(folder, "lit.ply"), v, [[0, 255, 0, 255]] * 4, faces=f)
+    v, f = quad(20, 44, 30, z=10)
+    write_ply(os.path.join(folder, "inside.ply"), v, [[*INSIDE_RGB, 255]] * 4, faces=f)
+    v, f = quad(16, 48, 0, z=30)
+    write_ply(os.path.join(folder, "shell.ply"), v, [[255, 255, 255, 255]] * 4, faces=f)
+    camera, _ = camera_from_view(forward=(0, 1, 0), up=(0, 0, 1), target=(0, 0, 0), half_height=50, aspect=1.0, distance=300)
+    with open(os.path.join(folder, "scene.json"), "w") as fh:
+        json.dump({"format": "braingl-blender-scene", "version": 1, "title": "look", "units": "mm",
+                   "background": BACKGROUND, "camera": camera,
+                   "layers": [layer_entry("point.ply", "point", "points", "flat", 1, radius=12),
+                              layer_entry("lit.ply", "lit green", "mesh", "lit", 4),
+                              layer_entry("inside.ply", "inside", "mesh", "flat", 4),
+                              layer_entry("shell.ply", "shell", "mesh", "lit", 4, opacity=opacity)]}, fh)
+    return folder
+
+
+def _check_look(png, label):
+    px = read_png(png)
+    assert px.shape == (96, 96, 4), px.shape
+    at = lambda x, z: px[int(round((z + 50) / 100 * 96 - 0.5)), int(round((x + 50) / 100 * 96 - 0.5)), :3]   # world mm -> pixel
+    background = np.array([51, 102, 153])
+    # the point glyph is a disc of its radius in the data colour ("Col" reaches the emission shader of the cloud / octahedron)
+    assert np.abs(at(-32, 0) - POINT_RGB).max() <= 3, f"{label}: point glyph rendered as {at(-32, 0)}"
+    assert np.abs(at(-32, 5) - POINT_RGB).max() <= 3, f"{label}: point glyph rendered as {at(-32, 5)} off its centre"
+    assert np.abs(at(-32, 20) - background).max() <= 3, f"{label}: the point glyph is larger than its radius"
+    assert np.abs(at(-32, -40) - background).max() <= 3, label
+    # "Col" drives the base colour of the lit material: a green rectangle lit by the headlight
+    lit = at(-2, 0)
+    assert lit[1] > 150 and lit[1] - max(lit[0], lit[2]) > 100, f"{label}: lit green layer rendered as {lit}"   # some specular white on top
+    # transparent surface: the flat layer behind it shows through, tinted by the surface in front
+    through, shell_only = at(32, 0).astype(float), at(32, 22).astype(float)
+    assert np.abs(shell_only - background).max() > 12, f"{label}: the transparent surface is invisible ({shell_only})"
+    assert shell_only.min() < 250 and np.ptp(shell_only) > 15, f"{label}: the transparent surface is opaque ({shell_only})"
+    assert through[0] - through[2] > 40, f"{label}: the layer behind the transparent surface is hidden ({through})"
+    assert through[2] > INSIDE_RGB[2] + 15, f"{label}: the surface in front leaves no trace ({through})"
+    assert np.abs(through - shell_only).max() > 30, label
+
+
+def test_render_look_cycles_point_cloud():
+    fresh()
+    with tempfile.TemporaryDirectory() as tmp:
+        d = _look_scene(os.path.join(tmp, "scene"))
+        png = os.path.join(tmp, "look.png")
+        ib.main([d, "--render", png, "--engine", "cycles", "--samples", "16", "--resolution", "96", "--points", "nodes"])
+        _check_look(png, "cycles, point cloud")
+
+
+def test_render_look_cycles_octahedra():
+    fresh()
+    with tempfile.TemporaryDirectory() as tmp:
+        d = _look_scene(os.path.join(tmp, "scene"))
+        png = os.path.join(tmp, "look.png")
+        ib.main([d, "--render", png, "--engine", "cycles", "--samples", "16", "--resolution", "96", "--points", "mesh"])
+        px = read_png(png)
+        # an octahedron seen along an axis is a square standing on a corner: its centre has the data colour
+        assert np.abs(px[48, 17, :3] - POINT_RGB).max() <= 3, px[48, 17, :3]
+        assert np.abs(px[48 + 9, 17 + 9, :3] - [51, 102, 153]).max() <= 3, "the octahedron reaches beyond |x| + |z| = radius"
+
+
+def test_render_look_eevee():
+    """The same picture with the default engine (needs a GPU: a failure to render is a SKIP)."""
+    for mode in ("nodes", "mesh"):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = _look_scene(os.path.join(tmp, "scene"))
+            png = os.path.join(tmp, "look.png")
+            res = run_script_cli(SCRIPT, [d, "--render", png, "--samples", "16", "--resolution", "96", "--points", mode])
+            if res.returncode != 0 or not os.path.isfile(png):
+                raise Skip("EEVEE could not render here (no GPU context?): " + (res.stderr or res.stdout)[-300:].strip())
+            if mode == "nodes":
+                _check_look(png, "eevee, point cloud")
+            else:
+                px = read_png(png)
+                assert np.abs(px[48, 17, :3] - POINT_RGB).max() <= 3, px[48, 17, :3]
 
 
 # ====================================================================== runner

@@ -2,9 +2,22 @@ cff-version: 1.2.0
 message: "If you use this software, please cite the paper listed under preferred-citation."
 title: "brainGL web"
 type: software
+abstract: >-
+  brainGL web is a browser port of the connectivity-glyph visualization of brainGL. brainGL was written by Ralph
+  Schurade; the connexel, glyph and edge-bundling code is by Joachim Böttger; the Directionality workspace is a
+  vendored copy of directionality-indicator-webgl, a port of DirectionalityIndicator by Sebastian Eichelbaum. The
+  refactoring of the software for the web browser was done by Daniel S. Margulies using Claude.
 authors:
+  - family-names: Schurade
+    given-names: Ralph
+  - family-names: Böttger
+    given-names: Joachim
+  - family-names: Eichelbaum
+    given-names: Sebastian
   - family-names: Margulies
     given-names: "Daniel S."
+repository-code: "https://github.com/NeuroanatomyAndConnectivity/braingl-web"
+url: "https://neuroanatomyandconnectivity.github.io/braingl-web/"
 license: MIT
 preferred-citation:
   type: article

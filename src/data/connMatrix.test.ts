@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { ConnMatrix, fractionAbove, HIST_BINS, SignMode, thresholdForBudget, thresholdForFraction } from "./connMatrix";
+import { buildConnexels } from "../glyphs/builders";
 import { ALL_FIXTURES, directed, FIXTURES, lcg, singleHemisphere } from "../testing/fixtures";
 import { glyphNodesFor, passesStrict } from "../testing/reference";
 import { f32Blob } from "../testing/serialise";
@@ -208,22 +209,29 @@ describe("fromFloat32Blob", () => {
 
 // ----------------------------------------------------------------- histogram
 
-/** bin of a raw value as documented: |value| >= b / HIST_BINS * maxAbs */
-const documentedBin = (raw: number) => Math.floor((Math.abs(raw) * HIST_BINS) / 32767);
+/** Lower raw bound that buildConnexels() derives from a threshold (rawBounds() in src/glyphs/builders.ts). */
+const rawLo = (conn: ConnMatrix, threshold: number) => Math.max(1, Math.floor(threshold / conn.scale));
+/** Threshold of histogram bin b. */
+const gridThreshold = (conn: ConnMatrix, b: number) => (b / HIST_BINS) * conn.maxAbs;
 
-function bruteCumulative(conn: ConnMatrix, rows: Uint8Array | null, sign: SignMode, bin: (raw: number) => number, lo = 0, hi = conn.n): Float64Array {
-  const cum = new Float64Array(HIST_BINS + 2);
+/**
+ * The documented definition, by counting: cum[b] = number of off-diagonal entries of the selected rows and
+ * sign with |raw| >= rawLo(b / HIST_BINS * maxAbs), |raw| <= ceil(maxAbs / scale).
+ */
+function bruteCumulative(conn: ConnMatrix, rows: Uint8Array | null, sign: SignMode, lo = 0, hi = conn.n): Float64Array {
+  const atLeast = new Float64Array(32770); // atLeast[a] = entries with |raw| >= a
+  const top = Math.ceil(conn.maxAbs / conn.scale);
   for (let i = lo; i < hi; i++) {
     if (rows && !rows[i]) continue;
     for (let j = 0; j < conn.n; j++) {
       const raw = conn.data[i * conn.n + j];
-      if (j === i || raw === 0) continue;
+      if (j === i || raw === 0 || Math.abs(raw) > top) continue;
       if (raw > 0 ? sign === 1 : sign === 0) continue;
-      const b = Math.min(HIST_BINS, bin(raw));
-      for (let q = 0; q <= b; q++) cum[q]++;
+      atLeast[Math.abs(raw)]++;
     }
   }
-  return cum;
+  for (let a = 32768; a >= 0; a--) atLeast[a] += atLeast[a + 1];
+  return Float64Array.from({ length: HIST_BINS + 1 }, (_, q) => atLeast[rawLo(conn, gridThreshold(conn, q))]);
 }
 
 describe.each(FIXTURES)("histogram of $name", ({ make }) => {
@@ -250,14 +258,29 @@ describe.each(FIXTURES)("histogram of $name", ({ make }) => {
       expect(cum[0]).toBe(count);
     });
 
-    it.each(SIGNS)("sign %i: is non-increasing and agrees with the documented definition within one bin", (sign) => {
+    it.each(SIGNS)("sign %i: is non-increasing and equals the documented definition in every bin", (sign) => {
       const cum = conn.cumulativeHistogram(rows, sign);
-      const doc = bruteCumulative(conn, rows, sign, documentedBin);
+      const doc = bruteCumulative(conn, rows, sign);
+      let differing = 0, increasing = 0;
       for (let b = 0; b <= HIST_BINS; b++) {
-        if (b > 0) expect(cum[b]).toBeLessThanOrEqual(cum[b - 1]);
-        expect(cum[b]).toBeLessThanOrEqual(doc[b]);
-        expect(cum[b]).toBeGreaterThanOrEqual(doc[b + 1]);
+        if (b > 0 && cum[b] > cum[b - 1]) increasing++;
+        if (cum[b] !== doc[b]) differing++;
       }
+      expect(increasing).toBe(0);
+      expect(differing).toBe(0);
+    });
+
+    it.each(SIGNS)("sign %i: cum[b] is the number of connexels buildConnexels keeps at b / HIST_BINS x maxAbs", (sign) => {
+      const cum = conn.cumulativeHistogram(rows, sign);
+      const glyphNodes = rows ?? new Uint8Array(ds.n).fill(1);
+      // every bin of the small datasets, every 13th (and both ends) of the larger ones
+      const step = ds.n <= 100 ? 1 : 13;
+      const wrong: number[] = [];
+      for (let b = 0; b <= HIST_BINS; b = b + step > HIST_BINS && b < HIST_BINS ? HIST_BINS : b + step) {
+        const set = buildConnexels(conn, { glyphNodes, targets: null, sign, threshold: gridThreshold(conn, b), maxThreshold: conn.maxAbs });
+        if (set.count !== cum[b]) wrong.push(b);
+      }
+      expect(wrong).toEqual([]);
     });
   });
 
@@ -295,18 +318,32 @@ describe.each(FIXTURES)("histogram of $name", ({ make }) => {
         expect(t).toBeLessThanOrEqual(conn.maxAbs);
         prev = t;
         const b = Math.round((t / conn.maxAbs) * HIST_BINS);
-        expect(cum[b]).toBeLessThanOrEqual(budget);
+        if (cum[HIST_BINS] <= budget) expect(cum[b]).toBeLessThanOrEqual(budget);
+        else expect(b).toBe(HIST_BINS); // even the top bin holds more than the budget
         if (b > 1) expect(cum[b - 1]).toBeGreaterThan(budget);
       }
     });
 
-    it("the connexels above thresholdForBudget fit the budget, within the entries of one histogram bin", () => {
-      for (const budget of budgets) {
+    it("buildConnexels at thresholdForBudget stays within the budget whenever any threshold can, and one bin lower would not", () => {
+      const built = (threshold: number) => buildConnexels(conn, { glyphNodes: rows, targets: null, sign, threshold, maxThreshold: conn.maxAbs }).count;
+      const atMax = built(conn.maxAbs);
+      for (const budget of [...budgets, atMax, atMax + 1, Math.max(0, atMax - 1), cum[1], cum[1] - 1, cum[HIST_BINS - 1]]) {
         const t = thresholdForBudget(cum, conn.maxAbs, budget);
+        const count = built(t);
+        if (atMax <= budget) expect(count).toBeLessThanOrEqual(budget);
+        else expect(t).toBe(conn.maxAbs); // nothing more can be done
+        // what the shader then draws (strictly above the threshold) is part of what was built
+        expect(strictCount(t)).toBeLessThanOrEqual(count);
         const b = Math.round((t / conn.maxAbs) * HIST_BINS);
-        const slack = cum[b - 1] - cum[b];
-        expect(strictCount(t)).toBeLessThanOrEqual(budget + slack);
+        if (b > 1 && atMax <= budget) expect(built(gridThreshold(conn, b - 1))).toBeGreaterThan(budget);
       }
+    });
+
+    it("a threshold on the histogram grid maps to its own bin", () => {
+      if (cum[0] === 0) return;
+      let wrong = 0;
+      for (let b = 0; b <= HIST_BINS; b++) if (fractionAbove(cum, conn.maxAbs, gridThreshold(conn, b)) !== cum[b] / cum[0]) wrong++;
+      expect(wrong).toBe(0);
     });
 
     it("fractionAbove is 1 at zero, non-increasing, and matches a brute-force count within one bin", () => {
@@ -338,18 +375,26 @@ describe.each(FIXTURES)("histogram of $name", ({ make }) => {
         const t = thresholdForFraction(cum, conn.maxAbs, fraction);
         expect(t).toBeLessThanOrEqual(prev);
         prev = t;
-        // at the returned threshold no more than the requested fraction lies above ...
-        expect(fractionAbove(cum, conn.maxAbs, t + 1e-9 * bin)).toBeLessThanOrEqual(fraction + 1e-12);
+        // at the returned threshold no more than the requested fraction lies above (unless even the top bin holds more) ...
+        if (cum[HIST_BINS] <= fraction * cum[0]) expect(fractionAbove(cum, conn.maxAbs, t)).toBeLessThanOrEqual(fraction + 1e-12);
+        else expect(t).toBe(conn.maxAbs);
         // ... and one bin lower it would be more than requested
         if (t > bin / 2) expect(fractionAbove(cum, conn.maxAbs, t - 0.999 * bin)).toBeGreaterThan(fraction);
       }
       expect(thresholdForFraction(cum, conn.maxAbs, 1)).toBe(0);
-      for (const f of [0.123, 0.35, 0.613, 0.79]) {
+    });
+
+    it("thresholdForFraction(fractionAbove(t)) returns the bin of t, or the first bin with the same count", () => {
+      if (cum[0] === 0) return;
+      for (const f of [0, 0.0004, 0.01, 0.123, 0.25, 0.35, 0.5, 0.613, 0.79, 0.9, 0.9996, 1]) {
         const t = f * conn.maxAbs;
-        // the fraction is padded by a few ulp: see the round-trip bug documented below
-        const back = thresholdForFraction(cum, conn.maxAbs, fractionAbove(cum, conn.maxAbs, t) * (1 + 1e-12));
-        expect(back).toBeLessThanOrEqual(t + 1e-9);
-        expect(fractionAbove(cum, conn.maxAbs, back + 1e-9 * bin)).toBe(fractionAbove(cum, conn.maxAbs, t));
+        const b = Math.min(HIST_BINS, Math.floor(f * HIST_BINS + 1e-9));
+        const back = thresholdForFraction(cum, conn.maxAbs, fractionAbove(cum, conn.maxAbs, t));
+        const bb = Math.round((back / conn.maxAbs) * HIST_BINS);
+        expect(back).toBe(gridThreshold(conn, bb));
+        expect(bb).toBeLessThanOrEqual(b);
+        expect(cum[bb]).toBe(cum[b]);
+        if (bb > 0) expect(cum[bb - 1]).toBeGreaterThan(cum[b]);
       }
     });
   });
@@ -379,35 +424,98 @@ describe("histogram of a hand-made matrix", () => {
   });
 });
 
-describe("known weaknesses of the histogram helpers", () => {
-  // BUG (src/data/connMatrix.ts, thresholdForFraction): `target = fraction * cum[0]` is computed in floating
-  // point, so feeding back the fraction that fractionAbove() just returned can give a target a hair below the
-  // integer count it came from (15 / 22 * 22 = 14.999999999999998). The bin is then skipped and the result
-  // jumps to the next bin with fewer entries, however far away that is.
-  it.fails("thresholdForFraction(fractionAbove(t)) does not land above t", () => {
+describe("histogram helpers: cases that used to go wrong", () => {
+  // fraction * cum[0] is computed in floating point: 15 / 22 * 22 = 14.999999999999998, which used to skip the
+  // bin the fraction came from and jump to the next bin with fewer entries, however far away that was
+  it("thresholdForFraction(fractionAbove(t)) does not land above t", () => {
     const cum = new Float64Array(HIST_BINS + 1);
     cum[0] = 22;
     cum.fill(15, 1, 1001); // 15 entries with |value| >= 0.5, 7 tiny ones
     cum.fill(3, 1001); //      3 entries reach the top of the range
     const fraction = fractionAbove(cum, 1, 0.25);
     expect(fraction).toBe(15 / 22);
-    expect(thresholdForFraction(cum, 1, fraction)).toBeLessThanOrEqual(0.25); // returns 0.5005
+    expect(thresholdForFraction(cum, 1, fraction)).toBe(1 / HIST_BINS); // the first bin that holds 15 (was 0.5005)
+    expect(thresholdForFraction(cum, 1, 14.5 / 22)).toBe(1001 / HIST_BINS); // a target between two counts is not rounded up
   });
 
-  // SURPRISING (src/data/connMatrix.ts, cumulativeHistogram / thresholdForBudget): the bins are 32768 / 2000 raw
-  // units wide, but a bin index is converted back to a threshold with maxAbs (= 32767 raw units) / 2000. The
-  // returned threshold is therefore slightly below the bin edge, and a few more connexels than the budget pass it.
-  // Harmless for a budget of millions, but "count <= budget" does not hold exactly.
-  it.fails("the number of connexels above thresholdForBudget never exceeds the budget", () => {
-    const ds = FIXTURES[0].make();
+  it("the round trip holds for every pair of counts up to 300", () => {
+    let wrong = 0;
+    for (let total = 1; total <= 300; total++) {
+      for (let k = 0; k <= total; k += 1 + (total % 7)) {
+        const cum = new Float64Array(HIST_BINS + 1).fill(k);
+        cum[0] = total;
+        cum.fill(0, 1500);
+        // bins 1..1499 hold k entries, so the first bin with no more than k is bin 1 (bin 0 when k is everything)
+        if (thresholdForFraction(cum, 1, fractionAbove(cum, 1, 0.6)) !== (k === total ? 0 : 1) / HIST_BINS) wrong++;
+      }
+    }
+    expect(wrong).toBe(0);
+  });
+
+  // The bins used to be 32768 / 2000 raw units wide while a bin index was converted back to a threshold with
+  // maxAbs (= 32767 raw units) / 2000, so a few more connexels than the budget passed the returned threshold
+  // (6 over at bin 232 of icoBrain(1)).
+  describe.each(FIXTURES)("on $name", ({ make }) => {
+    const ds = make();
     const conn = ds.conn;
-    const cum = conn.cumulativeHistogram(null, 0);
-    for (let b = 1; b <= HIST_BINS; b++) {
-      const budget = cum[b];
-      const t = thresholdForBudget(cum, conn.maxAbs, budget);
-      let count = 0;
-      for (let i = 0; i < ds.n; i++) for (let j = 0; j < ds.n; j++) if (i !== j && conn.get(i, j) > t) count++;
-      expect(count).toBeLessThanOrEqual(budget); // e.g. 6 over at bin 232 of icoBrain(1)
+    it.each(SIGNS)("sign %i: for every bin count as budget, the connexels at or above thresholdForBudget fit it", (sign) => {
+      const cum = conn.cumulativeHistogram(null, sign);
+      const magnitudes: number[] = [];
+      for (let i = 0; i < ds.n; i++) {
+        for (let j = 0; j < ds.n; j++) {
+          const raw = conn.data[i * ds.n + j];
+          if (i !== j && raw !== 0 && (raw > 0 ? sign !== 1 : sign !== 0)) magnitudes.push(Math.abs(raw));
+        }
+      }
+      magnitudes.sort((x, y) => x - y);
+      /** entries with |raw| >= lo, by binary search */
+      const atLeast = (lo: number): number => {
+        let a = 0, b = magnitudes.length;
+        while (a < b) { const m = (a + b) >> 1; if (magnitudes[m] < lo) a = m + 1; else b = m; }
+        return magnitudes.length - a;
+      };
+      let over = 0, checked = 0;
+      for (let b = 1; b <= HIST_BINS; b++) {
+        for (const budget of [cum[b], cum[b] - 1, cum[b] + 1]) {
+          if (budget < atLeast(rawLo(conn, conn.maxAbs))) continue; // no threshold can fit this budget
+          const t = thresholdForBudget(cum, conn.maxAbs, budget);
+          if (atLeast(rawLo(conn, t)) > budget) over++;
+          checked++;
+        }
+      }
+      expect(checked).toBeGreaterThan(HIST_BINS);
+      expect(over).toBe(0);
+    });
+  });
+
+  it("the top bin follows floor(maxAbs / scale), which is 32766 for some scales", () => {
+    // two entries at the maximum, two one raw step below
+    const seen = new Set<number>();
+    for (const maxAbs of [1, 0.8, 0.3, 5, 2.5, 0.9642910361289978, 123.456, 1e-3]) {
+      const values = [0, maxAbs, maxAbs * (32766 / 32767), maxAbs, 0, 0.1 * maxAbs, maxAbs * (32766 / 32767), 0.1 * maxAbs, 0];
+      const conn = ConnMatrix.fromFull(values, 3);
+      expect(Array.from(conn.data.filter((v) => v > 30000)).sort()).toEqual([32766, 32766, 32767, 32767]);
+      const lo = rawLo(conn, conn.maxAbs);
+      seen.add(lo);
+      const cum = conn.cumulativeHistogram(null, 2);
+      const all = new Uint8Array(3).fill(1);
+      const built = (threshold: number) => buildConnexels(conn, { glyphNodes: all, targets: null, sign: 2, threshold, maxThreshold: conn.maxAbs }).count;
+      expect(cum[HIST_BINS]).toBe(lo === 32767 ? 2 : 4);
+      expect(cum[HIST_BINS]).toBe(built(conn.maxAbs));
+      for (const budget of [0, 1, 2, 3, 4, 5, 6]) {
+        const count = built(thresholdForBudget(cum, conn.maxAbs, budget));
+        if (budget >= built(conn.maxAbs)) expect(count).toBeLessThanOrEqual(budget);
+      }
+    }
+    expect([...seen].sort()).toEqual([32766, 32767]); // both rounding outcomes are exercised
+  });
+
+  it("a raw value of -32768 (not produced by any constructor) is counted exactly when the builder keeps it", () => {
+    for (const scale of [1 / 32767, 0.8 / 32767]) {
+      const conn = new ConnMatrix(2, new Int16Array([0, -32768, 32767, 0]), scale);
+      const built = buildConnexels(conn, { glyphNodes: new Uint8Array([1, 1]), targets: null, sign: 2, threshold: 0, maxThreshold: conn.maxAbs }).count;
+      expect(conn.cumulativeHistogram(null, 2)[0]).toBe(built);
+      expect(built).toBe(Math.ceil(conn.maxAbs / conn.scale) >= 32768 ? 2 : 1);
     }
   });
 });

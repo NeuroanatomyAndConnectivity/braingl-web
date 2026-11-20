@@ -22,12 +22,14 @@ the web controls.
 | Vectors | `vectors.vs`, two vertices per connexel: glyph point and node | one instanced screen-space quad per connexel from node to glyph point | Ported | Same geometry; WebGL has no wide lines. |
 | Pies | `pies.vs`, slices sorted by hue, arrays rebuilt and re-sorted when the threshold changes | sorted once; ranks recomputed per threshold change | Changed | Thresholds stay live, with the same result. |
 | Pie radius law | `(n*sqrt(a_cover)/sqrt(maxCount) + (1-n))*radius*100` | same | Ported | |
-| Difference glyphs | `diffpoints.vs`, Fisher-z difference, target kept only if **both** edge endpoints pass the threshold | same difference; target kept if **either** endpoint passes | Changed | Keeps transitions from a strong to a weak connection, which is what the glyph is for. |
+| Difference glyphs, selection | `diffpoints.vs`, Fisher-z difference, target kept only if **both** edge endpoints pass the threshold | same difference; the records are prefiltered so that a target is kept if **either** endpoint is strong enough, then the difference is tested | Changed | Keeps transitions from a strong to a weak connection, which is what the glyph is for. |
+| Difference glyphs, colour and alpha | colour from the orientation; alpha from `pow(a_value, 10*(1-u_beta))`, that is from the first endpoint's `r` | colour map (value mode) and alpha use the **difference** itself | Changed | The first endpoint's `r` says nothing about how different the two endpoints are, and can be negative. |
+| Difference glyphs, upper threshold | none: only `diff > threshold` is tested | `threshold < diff <= maxThreshold` | Changed | The upper threshold of the panel works for every style; see [Glyph types](../reference/glyph-types.md). |
 | Anatomical background glyphs | one `LittleBrainRenderer` and mesh per painted node, colour mode "vertex data" | one instanced draw call, row texture of raw values, three colour modes | Changed | Same picture, far less memory per glyph. |
 | Polar projection of the sphere | described in the 2013 paper, never in the glyphset code | `glyphGeometry = -1` | Added | Overdraw-free map from the 2013 paper (equation 2). |
 | Glyph geometry and colour surfaces | `D_SURFACE_GLYPH_GEOMETRY`, `D_SURFACE_GLYPH_COLOR` | `glyphGeometry`, `colorSurface` | Ported | |
 | Glyph rotation | `D_GLYPH_ROTATION`, `D_GLYPH_ROT_X/Y/Z` | `rotationEnabled`, `rotX/Y/Z` | Ported | |
-| Glyph alpha | `pow(value, 10*(1-D_GLYPH_ALPHA))` | `pow(abs(value)/maxAbs, 10*(1-glyphAlpha))` | Ported | The value is normalised by the matrix maximum. |
+| Glyph alpha | `pow(value, 10*(1-D_GLYPH_ALPHA))` | `pow(abs(value) / max(1, maxAbs), 10*(1-glyphAlpha))` | Changed | For correlations (largest value at most 1) the raw `r` is used, as in the original; for other weights the value is divided by the matrix maximum so that it stays between 0 and 1. The absolute value is used so that negative values also give a defined alpha. |
 | Orientation and value colours | `D_GLYPH_COLORMODE` | `glyphColorMode` | Ported | |
 | Depth offset | clip-space offset `-0.00001 * u_scale` | lift toward the viewer in glyph radii (`depthLift`) | Changed | Scales with the glyph size and works with the orthographic camera in millimetres. |
 | Connection to itself | not excluded (a node's value with itself is drawn at the glyph centre) | excluded (`j != i`) | Changed | The diagonal carries no information. |
@@ -39,10 +41,10 @@ the web controls.
 | Feature | brainGL | brainGL web | Status | Reason |
 |---|---|---|---|---|
 | Threshold, sign | `D_THRESHOLD`, `D_GLYPH_THRESHOLD_SIGN` | `threshold`, `sign` | Ported | |
-| Minimum length | `D_MINLENGTH`, measured on the displayed surface | `minLength`, measured on a separately chosen surface | Changed | Taken from vidview, which has a separate source for the minimum-length test: the length can be measured on one surface (for example pial) while the glyphs sit on another (for example inflated). |
+| Minimum length | `D_MINLENGTH`, measured on the displayed surface | `minLength`, measured on a selectable surface (`lengthSurface`): by default the anatomical (pial) surface, or, with the option "displayed surface (as in brainGL)", the surface that is shown | Changed | Taken from vidview, which has a separate source for the minimum-length test: the length can be measured on one surface (for example pial) while the glyphs sit on another (for example inflated). The brainGL behaviour stays available. |
 | Load-time minimum threshold | `m_minThreshold`, third token of `.glyphset`, default 0.8; everything below is dropped | automatic connexel budget (`budgetM`) | Changed | The limit is derived from the data and the GPU, stated in the status line, and rises or falls with the selected region. A `.glyphset` value still sets the starting threshold. |
 | Percentile threshold | `D_THRESHOLD_PERC` | none | Not ported | The status line reports counts instead. |
-| Upper threshold | `m_maxThreshold`, third token of line 3 | `maxThreshold`, starts at the file's value if below 1, else at the maximum | Ported | |
+| Upper threshold | `m_maxThreshold`, third token of line 3 | `maxThreshold`, starts at the file's value if below 1, else at the maximum of the matrix | Ported | Applied only when primitives are drawn, ranked or baked, never when the GPU buffers are built. |
 | Matrix storage | float32 lower triangle (`n(n+1)/2` values), rows read lazily; network matrices | dense int16 `n x n` (`2 n^2` bytes), loaded entirely | Changed | Direct row access and raw integers to the GPU; about the same footprint as the lower triangle in float32. |
 | Value precision | float32 | 16-bit quantisation relative to the largest value | Changed | See the [formats](../reference/data-formats.md#dtype-and-scale). |
 | Node limit | not limited by design | 65,535 | Changed | 16-bit indices on the GPU. |
@@ -58,7 +60,7 @@ the web controls.
 | Painting regions | ctrl + right-drag, ctrl + shift to erase | same, plus Paint/Erase tools and keys | Ported | |
 | Several regions | one ROI | each paint colour is a region | Changed | Needed for the bridge to Directionality. |
 | Mean connectivity of a region | `avgConRtoZ` (Fisher-z mean) | same | Ported | |
-| Hemisphere selector | `D_LEFT_RIGHT` | `hemi` | Ported | |
+| Hemisphere selector | `D_LEFT_RIGHT` | `hemi` | Changed | The split is `i >= leftNodes` for the right hemisphere. brainGL tests `i > m_points_middle` for the right hemisphere, so the first right-hemisphere node, `m_points_middle` itself, belongs to neither hemisphere; here it belongs to the right one. |
 | Four separate surface choices | three | four (display, geometry, colour, length) | Added | The minimum-length surface. |
 | Overlays | per-mesh vertex data | named overlays shown as the surface colour; sulc / curv shading | Added | Common per-node maps such as sulcal depth. |
 | Colour maps | brainGL's maps and an editor | ten fixed maps (brainGL's `grey`, `rainbow`, `rainbow 2`, `blue white red`, plus `green - red`, `cool - warm`, `viridis`, `magma`, `hot`, `gradient`) | Changed | The editor is not ported; modern perceptual maps added. |
@@ -94,7 +96,7 @@ the web controls.
 | Feature | Description |
 |---|---|
 | Directionality workspace | The vendored LGPL app: LIC and arrows on a parcellated surface, with a bridge from painted regions or surface maps. |
-| Blender export | Scenes as coloured geometry plus `scene.json`; an import script; a command-line exporter. |
+| Blender export | Scenes as coloured geometry plus `scene.json`; an import script; a command-line exporter. Differences from the screen: the export has no fixed camera, so glyphs lie along the surface normal or in the tangent plane; pies are resampled to at most 48 wedges per pie, because slices narrower than that cannot be resolved in a render; and glyph alpha is ignored (the primitives are opaque, vertex colours only). |
 | Scripting API | `braingl.glyphs.setParams` and friends in the console. |
 
 ## Not ported

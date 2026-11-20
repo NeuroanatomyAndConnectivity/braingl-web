@@ -8,14 +8,18 @@ float32-matrix file family (see docs/reference/data-formats.md).
 
 Sub-commands
 ------------
-from-matrix      surfaces + an existing node-by-node matrix (.npy or raw float32)
-from-timeseries  surfaces + surface time series (.func.gii / .npy) -> Pearson r
+from-matrix      surfaces + an existing symmetric node-by-node matrix
+                 (.npy or raw float32)
+from-timeseries  surfaces + per-node time series (.func.gii / .npy) -> Pearson r
 nki-demo         group-average functional connectivity of the enhanced NKI
                  Rockland sample (the data set of Boettger et al. 2014),
-                 downloaded through nilearn, on fsaverage4 or fsaverage5
+                 downloaded through nilearn, on fsaverage3, 4 or 5
 to-braingl       convert a web glyphset back to the original brainGL files
 
-Requires: numpy, nibabel (and nilearn for ``nki-demo``).
+Surfaces are read from GIFTI (.gii, .gii.gz), FreeSurfer binary (lh.pial) or
+FreeSurfer ASCII (.asc) files. Run a sub-command with --help for its options.
+
+Requires numpy and nibabel; ``nki-demo`` also needs nilearn and scipy.
 """
 from __future__ import annotations
 
@@ -97,19 +101,55 @@ def quantize_upper(conn, dtype="int8"):
     vals = np.nan_to_num(vals, nan=0.0, posinf=0.0, neginf=0.0)
     if dtype == "float32":
         return vals.astype("<f4"), 1.0
-    vmax = float(np.abs(vals).max()) or 1.0
+    vmax = (float(np.abs(vals).max()) if vals.size else 0.0) or 1.0   # a 1 x 1 matrix has no upper triangle
     top = 127 if dtype == "int8" else 32767
     q = np.rint(vals / vmax * top).astype("<i1" if dtype == "int8" else "<i2")
     return q, vmax / top
 
 
+def unique_names(names, taken=()):
+    """Make names unique by numbering repeats: pial, pial -> pial, pial_2.
+
+    Every surface and overlay is stored as ``<name>.f32``, so two entries with
+    the same name would overwrite each other. Names are compared without
+    regard to case (the files may live on a case-insensitive file system);
+    ``taken`` lists names that are in use already."""
+    seen = {str(t).lower() for t in taken}
+    out = []
+    for nm in names:
+        nm = str(nm)
+        if not nm or nm in (".", "..") or any(c in nm for c in "/\\\0"):
+            raise SystemExit(f"{nm!r} cannot be used as a surface or overlay name (it becomes a file name)")
+        cand, k = nm, 1
+        while cand.lower() in seen:
+            k += 1
+            cand = f"{nm}_{k}"
+        seen.add(cand.lower())
+        out.append(cand)
+    return out
+
+
 def write_glyphset(out, name, surfaces, triangles, conn, left_nodes=0, left_triangles=0,
                    overlays=None, mask=None, dtype="int8", description="", extra=None):
-    """surfaces: list of (name, xyz[n,3]); conn: symmetric [n,n] array-like."""
-    out = Path(out)
-    out.mkdir(parents=True, exist_ok=True)
+    """surfaces: list of (name, xyz[n,3]); conn: symmetric [n,n] array-like.
+
+    Surfaces (and overlays) that share a name are numbered (pial, pial_2), in
+    the file names as well as in the manifest."""
     n = surfaces[0][1].shape[0]
     assert conn.shape == (n, n), f"matrix is {conn.shape}, surfaces have {n} nodes"
+    for sname, xyz in surfaces:
+        assert xyz.shape == (n, 3), f"surface {sname} has {xyz.shape[0]} nodes, expected {n}"
+    overlays = list(overlays or [])
+    # "connectivity.f32" is the matrix of a float32 glyphset
+    snames = unique_names([s for s, _ in surfaces], taken=["connectivity"])
+    onames = unique_names([o for o, _ in overlays], taken=["connectivity", *snames])
+    for old, new in zip([s for s, _ in surfaces] + [o for o, _ in overlays], snames + onames):
+        if old != new:
+            print(f"note: there is more than one \"{old}\"; one of them is stored as \"{new}\"")
+    surfaces = [(nm, xyz) for nm, (_, xyz) in zip(snames, surfaces)]
+    overlays = [(nm, data) for nm, (_, data) in zip(onames, overlays)]
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
     man = {
         "format": "braingl-web-glyphset", "version": 1, "name": name, "description": description,
         "nodes": int(n), "leftNodes": int(left_nodes), "leftTriangles": int(left_triangles),
@@ -117,11 +157,10 @@ def write_glyphset(out, name, surfaces, triangles, conn, left_nodes=0, left_tria
     }
     np.asarray(triangles, dtype="<u4").tofile(out / "triangles.u32")
     for sname, xyz in surfaces:
-        assert xyz.shape == (n, 3), f"surface {sname} has {xyz.shape[0]} nodes, expected {n}"
         fn = f"{sname}.f32"
         np.asarray(xyz, dtype="<f4").tofile(out / fn)
         man["surfaces"].append({"name": sname, "file": fn})
-    for oname, data in (overlays or []):
+    for oname, data in overlays:
         fn = f"{oname}.f32"
         np.asarray(data, dtype="<f4").tofile(out / fn)
         man["overlays"].append({"name": oname, "file": fn})
@@ -138,6 +177,20 @@ def write_glyphset(out, name, surfaces, triangles, conn, left_nodes=0, left_tria
         json.dump(man, f, indent=1)
     total = sum(p.stat().st_size for p in out.iterdir())
     print(f"wrote {out}  ({n} nodes, {total / 1e6:.1f} MB)")
+
+
+def nodes_with_data(conn, chunk=1024):
+    """True for every node that has at least one non-zero value off the diagonal, in its row or its column
+    (the rule of the browser's loaders for matrices that come without a mask: the others are the medial wall)."""
+    n = conn.shape[0]
+    has = np.zeros(n, dtype=bool)
+    for lo in range(0, n, chunk):
+        block = np.nan_to_num(np.asarray(conn[lo:lo + chunk], dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0) != 0
+        rows = np.arange(lo, min(n, lo + chunk))
+        block[rows - lo, rows] = False
+        has[rows] |= block.any(axis=1)
+        has |= block.any(axis=0)
+    return has
 
 
 def stack_hemis(lh, rh):
@@ -203,8 +256,14 @@ def surface_label(path):
     return parts[0] if parts else b
 
 
-def cmd_from_matrix(a, mask=None):
-    names = a.names.split(",") if a.names else None
+def cmd_from_matrix(a, mask=None, conn=None):
+    """Write a glyphset from the surfaces and the matrix named on the command line
+    (or from `conn`, a matrix that is in memory already)."""
+    names = [x.strip() for x in a.names.split(",")] if a.names else None
+    if names and len(names) != len(a.left):
+        raise SystemExit(f"--names lists {len(names)} names for {len(a.left)} surfaces")
+    if a.right and len(a.right) != len(a.left):
+        raise SystemExit(f"--right lists {len(a.right)} surfaces, --left {len(a.left)}: give the same surfaces for both hemispheres, in the same order")
     left = [load_surface(p) for p in a.left]
     right = [load_surface(p) for p in a.right] if a.right else None
     surfaces, tri, ln, lt = [], None, 0, 0
@@ -214,20 +273,32 @@ def cmd_from_matrix(a, mask=None):
             rh = right[k]
             # anatomical surfaces are already in a common space; only inflated / spherical ones overlap
             lx, rx = (lh[0], rh[0]) if a.no_separate or nm in ANATOMICAL else separate_hemispheres(lh[0], rh[0])
-            xyz, t = stack_hemis((lx, lh[1]), (rx, rh[1]))
+            xyz, tri = stack_hemis((lx, lh[1]), (rx, rh[1]))
             ln, lt = lh[0].shape[0], lh[1].shape[0]
         else:
-            xyz, t = lh
+            xyz, tri = lh
+        if surfaces and xyz.shape[0] != surfaces[0][1].shape[0]:
+            raise SystemExit(f"surface {nm} has {xyz.shape[0]} nodes, {surfaces[0][0]} has {surfaces[0][1].shape[0]}")
         surfaces.append((nm, xyz))
-        tri = t
-    conn = load_matrix(a.matrix, surfaces[0][1].shape[0])
+    n = surfaces[0][1].shape[0]
+    if conn is None:
+        conn = load_matrix(a.matrix, n)
+    if conn.ndim != 2 or conn.shape != (n, n):
+        raise SystemExit(f"the matrix has shape {tuple(conn.shape)}, the surfaces have {n} nodes (expected {n} x {n})")
     overlays = []
     for spec in a.overlay or []:
-        nm, *paths = spec.split("=")[0], *spec.split("=")[1].split(",")
-        data = np.concatenate([np.ravel(load_scalars(p)) for p in paths])
-        if data.shape[0] != surfaces[0][1].shape[0]:
-            raise SystemExit(f"overlay {nm} has {data.shape[0]} values, the surfaces have {surfaces[0][1].shape[0]} nodes")
+        nm, sep, files = spec.partition("=")
+        if not sep or not nm or not files:
+            raise SystemExit(f"--overlay {spec!r}: expected name=left_file[,right_file]")
+        data = np.concatenate([np.ravel(load_scalars(p)) for p in files.split(",")])
+        if data.shape[0] != n:
+            raise SystemExit(f"overlay {nm} has {data.shape[0]} values, the surfaces have {n} nodes")
         overlays.append((nm, data))
+    if mask is None:
+        # nodes with an empty row and column (the medial wall of most matrices) carry no data
+        mask = nodes_with_data(conn)
+        if mask.all():
+            mask = None
     write_glyphset(a.out, a.name or Path(a.out).name, surfaces, tri, conn, ln, lt, overlays, mask=mask, dtype=a.dtype)
 
 
@@ -235,14 +306,25 @@ def cmd_from_timeseries(a):
     ts = np.concatenate([np.atleast_2d(load_scalars(p)) for p in a.timeseries], axis=0)
     print("time series", ts.shape)
     r, valid = correlation(ts)
-    tmp = Path(a.out) / "_conn.npy"
-    Path(a.out).mkdir(parents=True, exist_ok=True)
-    np.save(tmp, r)
-    a.matrix = str(tmp)
-    try:
-        cmd_from_matrix(a, mask=valid)  # nodes without signal (medial wall) are masked
-    finally:
-        tmp.unlink()
+    # the matrix is handed over in memory: nothing temporary is written to the output folder
+    cmd_from_matrix(a, mask=valid, conn=r)  # nodes without signal (medial wall) are masked
+
+
+NKI_SOURCE = "http://fcon_1000.projects.nitrc.org/indi/enhanced/"
+
+
+def nki_description(subjects, mesh, hemis):
+    """Manifest description of the NKI demo; hemis is ["left", "right"], ["left"] or ["right"]."""
+    which = "both hemispheres" if len(hemis) == 2 else f"{hemis[0]} hemisphere"
+    return ("Group-average resting-state functional connectivity (Pearson r, Fisher-z averaged) of "
+            f"{subjects} participant{'' if subjects == 1 else 's'} of the enhanced NKI Rockland Sample (Nooner et al. 2012, "
+            f"doi:10.3389/fnins.2012.00152) on the FreeSurfer {mesh} surface, {which}.")
+
+
+def nki_credit(mesh):
+    """Manifest "credit" line of the NKI demo: the data are redistributed with attribution."""
+    return ("Data: enhanced Nathan Kline Institute - Rockland Sample (Nooner et al. 2012), 1000 Functional "
+            f"Connectomes Project / INDI. Surfaces: FreeSurfer {mesh} (Fischl et al. 1999).")
 
 
 def cmd_nki_demo(a):
@@ -293,12 +375,10 @@ def cmd_nki_demo(a):
         surfaces.append((nm, xyz))
     sulc = np.concatenate([np.ravel(load_scalars(fs[f"sulc_{h}"])) for h in hemis])
     curv = np.concatenate([np.ravel(load_scalars(fs[f"curv_{h}"])) for h in hemis])
-    desc = (f"Group-average resting-state functional connectivity (Pearson r, Fisher-z averaged) of "
-            f"{used} participants of the enhanced NKI Rockland sample, {a.mesh} "
-            f"({'both hemispheres' if len(hemis) == 2 else hemis[0] + ' hemisphere'}).")
     write_glyphset(a.out, f"NKI Rockland average (n={used}, {a.mesh})", surfaces, tri, r, ln, lt,
-                   overlays=[("sulc", sulc), ("curv", curv)], mask=valid_all, dtype=a.dtype, description=desc,
-                   extra={"source": "http://fcon_1000.projects.nitrc.org/indi/enhanced/", "subjects": used})
+                   overlays=[("sulc", sulc), ("curv", curv)], mask=valid_all, dtype=a.dtype,
+                   description=nki_description(used, a.mesh, hemis),
+                   extra={"source": NKI_SOURCE, "subjects": used, "credit": nki_credit(a.mesh)})
 
 
 def cmd_to_braingl(a):
@@ -317,16 +397,18 @@ def cmd_to_braingl(a):
             np.savetxt(f, np.c_[t, np.zeros(len(t), dtype=int)], fmt="%d %d %d %d")
 
     sets = {"L": [], "R": []} if ln else {"all": []}
-    for s in man["surfaces"]:
+    # .set files list one file name per line, separated from the offsets by blanks: no blanks in the names
+    stems = unique_names(["_".join(str(s["name"]).split()) or "surface" for s in man["surfaces"]])
+    for s, stem in zip(man["surfaces"], stems):
         xyz = np.fromfile(src / s["file"], dtype="<f4").reshape(-1, 3)
         if ln:
-            write_asc(out / f"L.{s['name']}.asc", xyz[:ln], tri[:lt])
-            write_asc(out / f"R.{s['name']}.asc", xyz[ln:], tri[lt:] - ln)
-            sets["L"].append(f"L.{s['name']}.asc")
-            sets["R"].append(f"R.{s['name']}.asc")
+            write_asc(out / f"L.{stem}.asc", xyz[:ln], tri[:lt])
+            write_asc(out / f"R.{stem}.asc", xyz[ln:], tri[lt:] - ln)
+            sets["L"].append(f"L.{stem}.asc")
+            sets["R"].append(f"R.{stem}.asc")
         else:
-            write_asc(out / f"{s['name']}.asc", xyz, tri)
-            sets["all"].append(f"{s['name']}.asc")
+            write_asc(out / f"{stem}.asc", xyz, tri)
+            sets["all"].append(f"{stem}.asc")
     for k, v in sets.items():
         (out / f"{k}.set").write_text("\n".join(v) + "\n")
     c = man["connectivity"]
@@ -346,47 +428,80 @@ def cmd_to_braingl(a):
     print(f"wrote brainGL glyphset to {out}/data.glyphset")
 
 
+DTYPE_HELP = ("how the connectivity values are stored: int8 (default; 1 byte per pair, values rounded to 1/127 of the "
+              "largest |value|), int16 (1/32767) or float32 (unchanged)")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     def common(p):
-        p.add_argument("--left", nargs="+", required=True, help="surfaces of the left hemisphere (or of the only mesh), e.g. pial inflated sphere")
-        p.add_argument("--right", nargs="+", help="matching surfaces of the right hemisphere")
-        p.add_argument("--names", help="comma separated surface names (default: derived from file names)")
-        p.add_argument("--overlay", action="append", help="name=left_file[,right_file] per-node scalars, e.g. sulc=lh.sulc,rh.sulc")
-        p.add_argument("--no-separate", action="store_true", help="do not move overlapping hemispheres apart")
-        p.add_argument("--dtype", default="int8", choices=["int8", "int16", "float32"])
-        p.add_argument("--name")
-        p.add_argument("--out", required=True)
+        p.add_argument("--left", nargs="+", required=True, metavar="SURFACE",
+                       help="surface files of the left hemisphere (or of the only mesh), e.g. lh.pial lh.inflated lh.sphere; "
+                            "the first one should be the anatomical surface, all need the same nodes")
+        p.add_argument("--right", nargs="+", metavar="SURFACE",
+                       help="the same surfaces of the right hemisphere, in the same order; its nodes follow those of the left")
+        p.add_argument("--names", help="comma separated surface names, one per --left file (default: pial, inflated, sphere ... "
+                                       "taken from the file names); repeated names are numbered (pial, pial_2)")
+        p.add_argument("--overlay", action="append", metavar="NAME=LEFT[,RIGHT]",
+                       help="per-node scalars (.npy, GIFTI or FreeSurfer curv), e.g. sulc=lh.sulc,rh.sulc; may be given several times")
+        p.add_argument("--no-separate", action="store_true",
+                       help="keep all coordinates as they are (by default the two hemispheres of every surface that is not "
+                            "pial, white, midthickness, smoothwm or orig are moved apart along x until they are 5 mm apart)")
+        p.add_argument("--dtype", default="int8", choices=["int8", "int16", "float32"], help=DTYPE_HELP)
+        p.add_argument("--name", help="name of the glyphset shown in the browser (default: the name of the output folder)")
+        p.add_argument("--out", required=True, help="output folder (created if needed); it receives glyphset.json and the binary files")
 
-    p = sub.add_parser("from-matrix", help="surfaces + node-by-node matrix")
+    p = sub.add_parser("from-matrix", help="surfaces + node-by-node matrix",
+                       description="Write a web glyphset from surfaces and an existing connectivity matrix. Nodes whose "
+                                   "row and column are entirely zero (the medial wall) are masked.")
     common(p)
-    p.add_argument("--matrix", required=True, help=".npy or raw float32 square matrix (brainGL format)")
+    p.add_argument("--matrix", required=True,
+                   help="square matrix with one row per node (left hemisphere first), as .npy or raw little-endian float32 "
+                        "(the brainGL format); it is taken to be symmetric: only the upper triangle is stored")
     p.set_defaults(func=cmd_from_matrix)
 
-    p = sub.add_parser("from-timeseries", help="surfaces + surface time series")
+    p = sub.add_parser("from-timeseries", help="surfaces + surface time series",
+                       description="Write a web glyphset whose connectivity is the Pearson correlation between the time "
+                                   "series of the nodes. Nodes without signal (constant time series) are masked.")
     common(p)
-    p.add_argument("--timeseries", nargs="+", required=True, help="left [right] .func.gii or .npy [nodes, time]")
+    p.add_argument("--timeseries", nargs="+", required=True, metavar="FILE",
+                   help="time series of the left [and right] hemisphere: .func.gii (one data array per time point) "
+                        "or .npy of shape [nodes, time]")
     p.set_defaults(func=cmd_from_timeseries)
 
-    p = sub.add_parser("nki-demo", help="enhanced NKI Rockland group average via nilearn")
-    p.add_argument("--subjects", type=int, default=40)
-    p.add_argument("--mesh", default="fsaverage4", choices=["fsaverage3", "fsaverage4", "fsaverage5"])
-    p.add_argument("--hemi", default="both", choices=["both", "lh", "rh"])
-    p.add_argument("--dtype", default="int8", choices=["int8", "int16", "float32"])
-    p.add_argument("--data-dir", default=None)
-    p.add_argument("--out", required=True)
+    p = sub.add_parser("nki-demo", help="enhanced NKI Rockland group average via nilearn",
+                       description="Download surface time series of the enhanced NKI Rockland sample and the fsaverage "
+                                   "surfaces with nilearn, and write the Fisher-z average of the participants' "
+                                   "correlation matrices as a web glyphset (pial, inflated, sphere and white surfaces, "
+                                   "sulc and curv overlays).")
+    p.add_argument("--subjects", type=int, default=40, help="number of participants to average (default: 40)")
+    p.add_argument("--mesh", default="fsaverage4", choices=["fsaverage3", "fsaverage4", "fsaverage5"],
+                   help="surface mesh: 642, 2562 (default) or 10242 nodes per hemisphere; for the two smaller meshes the "
+                        "fsaverage5 time series are averaged over each node and its neighbours before sub-sampling")
+    p.add_argument("--hemi", default="both", choices=["both", "lh", "rh"], help="hemispheres to include (default: both, left first)")
+    p.add_argument("--dtype", default="int8", choices=["int8", "int16", "float32"], help=DTYPE_HELP)
+    p.add_argument("--data-dir", default=None, help="where nilearn keeps its downloads (default: nilearn's own data folder)")
+    p.add_argument("--out", required=True, help="output folder (created if needed)")
     p.set_defaults(func=cmd_nki_demo)
 
-    p = sub.add_parser("to-braingl", help="web glyphset -> original brainGL .glyphset/.set/.asc/float32")
-    p.add_argument("glyphset")
-    p.add_argument("--out", required=True)
-    p.add_argument("--min-threshold", type=float, default=0.5)
+    p = sub.add_parser("to-braingl", help="web glyphset -> original brainGL .glyphset/.set/.asc/float32",
+                       description="Convert a web glyphset to the files the original brainGL reads: data.glyphset, one "
+                                   ".set file and one FreeSurfer .asc surface per hemisphere and surface, and the full "
+                                   "matrix as raw float32 (connectivity.bin; for a glyphset that stores only the upper "
+                                   "triangle the diagonal is set to 1). Overlays and the mask have no brainGL counterpart.")
+    p.add_argument("glyphset", help="folder that contains glyphset.json")
+    p.add_argument("--out", required=True, help="output folder (created if needed)")
+    p.add_argument("--min-threshold", type=float, default=0.5,
+                   help="load-time minimum threshold written to data.glyphset (default: 0.5)")
     p.set_defaults(func=cmd_to_braingl)
 
     a = ap.parse_args(argv)
-    a.func(a)
+    try:
+        a.func(a)
+    except OSError as e:   # a file that is missing or cannot be read: a message instead of a traceback
+        raise SystemExit(f"error: {e}") from None
 
 
 if __name__ == "__main__":

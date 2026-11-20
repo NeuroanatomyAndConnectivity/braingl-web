@@ -79,15 +79,16 @@ fetches `D(i)`, `G(i)`, `G(j)`, `C(i)`, `C(j)`, `L(i)` and `L(j)` by node id wit
 
 The four surfaces are independent, so the minimum-length test can use the pial surface while the
 glyphs sit on the inflated one. That separation, which brainGL does not have for the length test,
-is the point of the design.
+is the point of the design. (The option "displayed surface (as in brainGL)" makes the length surface follow the displayed one.)
 
 ## The connexel budget and the histogram
 
 You cannot send an arbitrary number of connexels to a GPU. brainGL asked for a *minimum threshold*
 when loading the data (default 0.8 in `.glyphset` files) and ignored everything below it. The port
 chooses it automatically. When the glyph nodes, sign or budget change it builds a cumulative
-histogram of `abs(value)` over the rows of the glyph nodes (2000 bins) and takes the smallest
-threshold whose count fits `budgetM` million connexels. That is the **build threshold**. The
+histogram of `abs(value)` over the rows of the glyph nodes (2000 bins, whose edges coincide with the integer limits the
+builders use, so the counts are exact) and takes the smallest threshold whose count fits `budgetM` million connexels
+without overshooting it. That is the **build threshold**. The
 status line states it, and warns when your own threshold is lower. The same histogram is used to
 report how many connexels pass. A paint region or the hemisphere selector reduces the number of
 rows, so the build threshold falls and fine structure appears when you paint a small region.
@@ -101,17 +102,20 @@ as brainGL does). A pie also needs to know how many slices it has and which slic
 and both depend on the threshold. Instead of re-sorting, a linear pass (`computePieRanks`) writes,
 per connexel, its rank among the node's *visible* connexels and the node's visible count. The vertex
 shader draws the slice from these two numbers (angle `rank / count * 2 pi`) and discards hidden
-connexels. A threshold change thus costs one linear pass, and pies are live, where brainGL rebuilt
+connexels. Each slice is a triangle whose rim lies outside the circle (at `r / cos(pi / count)`) and the fragment shader
+discards what is beyond the radius, so a pie is an exact disc whatever the number of slices. A threshold change thus costs one linear pass, and pies are live, where brainGL rebuilt
 and re-sorted.
 
 ## Difference glyphs
 
 The difference glyph compares two neighbouring nodes, so the unit is a mesh edge rather than a
 node. For each mesh edge `(i1, i2)` and each target `j` for which either endpoint's connection
-passes the (lower) build threshold, a 12-byte record stores `i1, i2, j` and both raw values. The
+passes the prefilter threshold, a 12-byte record stores `i1, i2, j` and both raw values. The
 shader computes the difference in Fisher z, `tanh(abs(atanh r1 - atanh r2))`, then filters on it.
-Records are built with a lower threshold than the display threshold, so that the threshold slider acts on the
-*difference*, not on the connection strength. The "either endpoint" rule keeps targets where one
+The prefilter threshold is `max(0.5 * build threshold, 0.15 * maxAbs)`, lower than the display threshold, so that the
+threshold slider acts on the *difference*, not on the connection strength; a single histogram of the stronger endpoint
+value then gives the smallest threshold at or above it whose count fits the connexel budget, so the buffer never exceeds
+the budget. The upper threshold is not used while building: on screen it bounds the difference. The "either endpoint" rule keeps targets where one
 neighbour is strongly connected and the other weakly, which are exactly the transitions that the
 glyph is for; brainGL required both endpoints to pass.
 
@@ -163,7 +167,8 @@ prose of the paper where they differ (marked "QUIRK" in the source).
 rules of the vertex shaders on the CPU and writes the result as coloured geometry: points, tubes, wedge
 triangles and meshes. It differs from the screen in the one respect that follows from having no fixed camera:
 the screen lifts glyphs toward the viewer and makes pies and polar maps face it; the export lifts them along
-the surface normal and lays flat glyphs in the tangent plane. See
+the surface normal and lays flat glyphs in the tangent plane. Two more differences are deliberate: pies are
+resampled to at most 48 wedges each, and glyph alpha is ignored (the primitives are opaque). See
 [Blender scene format](../reference/blender-scene-format.md). The same code runs in Node
 (`npm run export:blender`) so that the documentation's scenes can be generated without a browser.
 

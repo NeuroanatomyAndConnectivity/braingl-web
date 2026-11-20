@@ -4,20 +4,19 @@ Run from the repository root:
 
     python -m pytest tests/python -q
 
-Needs numpy, scipy, nibabel (and nilearn for the one nki-demo test, which
-replaces nilearn's download functions by local synthetic files: nothing is
-ever fetched from the network).
+Needs numpy, scipy, nibabel and pytest.  The two nki-demo tests also need
+nilearn and are skipped without it; they replace nilearn's download functions
+by local synthetic files, so nothing is ever fetched from the network.
 
 Expectations are computed independently of the tool (closed forms or
-brute-force loops), never copied from its output.  Cases marked
-``xfail(strict=True)`` document real defects of the tool; they turn into
-failures (XPASS) as soon as the defect is fixed, so that the mark gets removed.
+brute-force loops), never copied from its output.
 """
 from __future__ import annotations
 
 import importlib.util
 import json
 import math
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -340,12 +339,12 @@ def test_quantize_requantising_is_idempotent():
     assert scale2 == pytest.approx(scale, rel=1e-6)
 
 
-@pytest.mark.xfail(strict=True, raises=ValueError,
-                   reason="KNOWN BUG (minor) tools/make_glyphset.py:100: np.abs(vals).max() on the empty upper "
-                          "triangle of a 1x1 matrix raises 'zero-size array to reduction operation maximum'")
-def test_quantize_single_node_matrix():
-    q, scale = mg.quantize_upper(np.ones((1, 1), np.float32), "int8")
-    assert q.size == 0 and scale > 0
+@pytest.mark.parametrize("dtype,np_dtype", [("int8", "<i1"), ("int16", "<i2"), ("float32", "<f4")])
+def test_quantize_single_node_matrix(dtype, np_dtype):
+    """A 1 x 1 matrix has an empty upper triangle (np.abs(vals).max() used to raise on it)."""
+    q, scale = mg.quantize_upper(np.ones((1, 1), np.float32), dtype)
+    assert q.size == 0 and q.dtype == np.dtype(np_dtype)
+    assert scale > 0 and math.isfinite(scale)
 
 
 # ========================================================== separate_hemispheres
@@ -795,7 +794,7 @@ def test_write_manifest_agrees_with_the_shipped_example(tmp_path, two_hemi):
     ref = json.loads(example.read_text())
     man = json.loads((_write(tmp_path, two_hemi) / "glyphset.json").read_text())
     assert set(man) <= set(ref)                      # no key the shipped manifest does not have
-    assert set(ref) - set(man) <= {"source", "subjects"}
+    assert set(ref) - set(man) <= {"source", "subjects", "credit"}     # written by nki-demo only
     assert set(man["connectivity"]) == set(ref["connectivity"])
     assert man["format"] == ref["format"] and man["version"] == ref["version"]
 
@@ -1175,27 +1174,169 @@ def test_from_matrix_default_surface_name(tmp_path, filename, expected):
     assert np.allclose(web["surfaces"][expected], v, atol=1e-5)
 
 
-@pytest.mark.xfail(strict=True,
-                   reason="KNOWN BUG tools/make_glyphset.py cmd_from_matrix / write_glyphset (:121-123): surface names "
-                          "are not checked for duplicates. Two files with the same label (FreeSurfer's lh.sphere and "
-                          "lh.sphere.reg, or --names a,a) are both written to <name>.f32, the second overwriting the "
-                          "first, and the manifest lists the surviving surface twice (silent data loss)")
-def test_from_matrix_surfaces_with_the_same_label_do_not_overwrite_each_other(tmp_path):
+def test_from_matrix_surfaces_with_the_same_label_do_not_overwrite_each_other(tmp_path, capsys):
+    """Two files with the same label (FreeSurfer's lh.sphere and lh.sphere.reg) used to be written to the same
+    <name>.f32, the second overwriting the first, with the survivor listed twice in the manifest."""
     v, t = icosphere(0)
+    reg = v[:, [1, 2, 0]]
     nib.freesurfer.write_geometry(str(tmp_path / "lh.sphere"), v.astype(np.float64) * 100, t)
-    nib.freesurfer.write_geometry(str(tmp_path / "lh.sphere.reg"), v[:, [1, 2, 0]].astype(np.float64) * 100, t)
+    nib.freesurfer.write_geometry(str(tmp_path / "lh.sphere.reg"), reg.astype(np.float64) * 100, t)
     out = tmp_path / "web"
-    try:
-        cli("from-matrix", "--left", tmp_path / "lh.sphere", tmp_path / "lh.sphere.reg",
-            "--matrix", _square(tmp_path, 12, 1), "--out", out)
-    except SystemExit as e:
-        assert e.code not in (0, None)          # refusing with an error message is fine as well
-        return
+    cli("from-matrix", "--left", tmp_path / "lh.sphere", tmp_path / "lh.sphere.reg",
+        "--matrix", _square(tmp_path, 12, 1), "--out", out)
     man = json.loads((out / "glyphset.json").read_text())
-    files = [s["file"] for s in man["surfaces"]]
-    assert len(set(files)) == 2, f"both surfaces were written to {files[0]}"
-    first = np.fromfile(out / files[0], dtype="<f4").reshape(-1, 3)
-    assert np.allclose(first, v * 100, atol=1e-4)
+    assert [(s["name"], s["file"]) for s in man["surfaces"]] == [("sphere", "sphere.f32"), ("sphere_2", "sphere_2.f32")]
+    web = read_web(out)
+    assert np.allclose(web["surfaces"]["sphere"], v * 100, atol=1e-4)
+    assert np.allclose(web["surfaces"]["sphere_2"], reg * 100, atol=1e-4)
+    assert "sphere_2" in capsys.readouterr().out            # the renaming is reported
+
+
+def test_from_matrix_repeated_names_are_numbered(tmp_path, hemi_files):
+    d = hemi_files
+    out = tmp_path / "web"
+    cli("from-matrix", "--left", *d["gii_l"], "--right", *d["gii_r"], "--matrix", d["dir"] / "conn.bin",
+        "--names", "a,a,a", "--no-separate", "--out", out)
+    man = json.loads((out / "glyphset.json").read_text())
+    assert [(s["name"], s["file"]) for s in man["surfaces"]] == [("a", "a.f32"), ("a_2", "a_2.f32"), ("a_3", "a_3.f32")]
+    web = read_web(out)
+    for name, (l, r) in zip(("a", "a_2", "a_3"), d["geo"].values()):
+        assert np.array_equal(web["surfaces"][name], np.vstack([l, r])), name
+    referenced = {"glyphset.json", man["triangles"], man["connectivity"]["file"]} | {s["file"] for s in man["surfaces"]}
+    assert {p.name for p in out.iterdir()} == referenced
+
+
+def test_unique_names():
+    assert mg.unique_names(["pial", "inflated", "sphere"]) == ["pial", "inflated", "sphere"]
+    assert mg.unique_names(["pial", "pial", "white", "pial"]) == ["pial", "pial_2", "white", "pial_3"]
+    # a generated name never collides with one that was given
+    assert mg.unique_names(["a", "a_2", "a", "a"]) == ["a", "a_2", "a_3", "a_4"]
+    assert mg.unique_names(["a", "a", "a_2"]) == ["a", "a_2", "a_2_2"]
+    # the names become file names, possibly on a file system that ignores case
+    assert mg.unique_names(["Pial", "pial"]) == ["Pial", "pial_2"]
+    assert mg.unique_names(["sulc"], taken=["sulc", "connectivity"]) == ["sulc_2"]
+    assert mg.unique_names([]) == []
+    for bad in ("", "a/b", "..", "a\\b"):
+        with pytest.raises(SystemExit):
+            mg.unique_names([bad])
+
+
+def test_write_names_never_collide_with_each_other_or_with_the_matrix(tmp_path):
+    """Surfaces, overlays and (for float32) the matrix all live in <name>.f32 files."""
+    v, t = icosphere(0)
+    conn = sym_matrix(12, 5)
+    surfaces = [("pial", v * 1), ("connectivity", v * 2), ("pial", v * 3)]
+    overlays = [("sulc", np.arange(12, dtype=np.float32)), ("pial", np.arange(12, dtype=np.float32) + 100),
+                ("sulc", np.arange(12, dtype=np.float32) + 200)]
+    out = tmp_path / "web"
+    mg.write_glyphset(out, "x", surfaces, t, conn, overlays=overlays, dtype="float32")
+    web = read_web(out)
+    man = web["manifest"]
+    files = [man["triangles"], man["connectivity"]["file"]] + [e["file"] for e in man["surfaces"] + man["overlays"]]
+    assert len(set(files)) == len(files)
+    assert {p.name for p in out.iterdir()} == set(files) | {"glyphset.json"}
+    assert [e["name"] for e in man["surfaces"]] == ["pial", "connectivity_2", "pial_2"]
+    assert [e["name"] for e in man["overlays"]] == ["sulc", "pial_3", "sulc_2"]
+    assert all(e["file"] == e["name"] + ".f32" for e in man["surfaces"] + man["overlays"])
+    for (_, xyz), name in zip(surfaces, ["pial", "connectivity_2", "pial_2"]):
+        assert np.array_equal(web["surfaces"][name], xyz.astype(np.float32))
+    for (_, data), name in zip(overlays, ["sulc", "pial_3", "sulc_2"]):
+        assert np.array_equal(web["overlays"][name], data)
+    assert np.array_equal(web["raw"], conn[np.triu_indices(12, k=1)])       # the matrix is intact
+
+
+def test_from_matrix_overlays_with_the_same_name_are_both_kept(tmp_path):
+    v, t = icosphere(0)
+    surf = write_gii_surface(tmp_path / "lh.pial.gii", v * 50, t)
+    np.save(tmp_path / "one.npy", np.arange(12, dtype=np.float32))
+    np.save(tmp_path / "two.npy", -np.arange(12, dtype=np.float32))
+    out = tmp_path / "web"
+    cli("from-matrix", "--left", surf, "--matrix", _square(tmp_path, 12, 3),
+        "--overlay", f"depth={tmp_path / 'one.npy'}", "--overlay", f"depth={tmp_path / 'two.npy'}", "--out", out)
+    web = read_web(out)
+    assert list(web["overlays"]) == ["depth", "depth_2"]
+    assert np.array_equal(web["overlays"]["depth"], np.arange(12, dtype=np.float32))
+    assert np.array_equal(web["overlays"]["depth_2"], -np.arange(12, dtype=np.float32))
+
+
+def test_from_matrix_overlay_path_may_contain_an_equals_sign(tmp_path):
+    v, t = icosphere(0)
+    surf = write_gii_surface(tmp_path / "lh.pial.gii", v * 50, t)
+    sub = tmp_path / "run=1"
+    sub.mkdir()
+    np.save(sub / "sulc.npy", np.arange(12, dtype=np.float32))
+    out = tmp_path / "web"
+    cli("from-matrix", "--left", surf, "--matrix", _square(tmp_path, 12, 3), "--overlay", f"sulc={sub / 'sulc.npy'}", "--out", out)
+    assert np.array_equal(read_web(out)["overlays"]["sulc"], np.arange(12, dtype=np.float32))
+
+
+@pytest.mark.parametrize("bad", ["sulc", "=file.npy", "sulc="])
+def test_from_matrix_rejects_a_malformed_overlay_option(tmp_path, bad):
+    v, t = icosphere(0)
+    surf = write_gii_surface(tmp_path / "lh.pial.gii", v * 50, t)
+    with pytest.raises(SystemExit) as e:
+        cli("from-matrix", "--left", surf, "--matrix", _square(tmp_path, 12, 3), "--overlay", bad, "--out", tmp_path / "web")
+    assert "name=left_file" in str(e.value.code)
+    assert not (tmp_path / "web").exists()
+
+
+def test_from_matrix_rejects_mismatched_option_counts(tmp_path, hemi_files):
+    """Used to end in an IndexError traceback."""
+    d = hemi_files
+    base = ["from-matrix", "--matrix", d["dir"] / "conn.bin", "--out", tmp_path / "web"]
+    with pytest.raises(SystemExit) as e:
+        cli(*base, "--left", *d["gii_l"], "--right", *d["gii_r"], "--names", "a,b")
+    assert "--names lists 2 names for 3 surfaces" in str(e.value.code)
+    with pytest.raises(SystemExit) as e:
+        cli(*base, "--left", *d["gii_l"], "--right", *d["gii_r"][:2])
+    assert "--right lists 2 surfaces" in str(e.value.code)
+    with pytest.raises(SystemExit):
+        cli(*base, "--left", *d["gii_l"], "--right", *d["gii_r"], "--names", "a,b/c,d")
+    assert not (tmp_path / "web").exists()                  # nothing half-written is left behind
+
+
+def test_from_matrix_rejects_surfaces_and_matrices_of_the_wrong_shape_with_a_message(tmp_path, hemi_files):
+    d = hemi_files
+    v, t = icosphere(1)
+    other = write_gii_surface(tmp_path / "lh.inflated.gii", v, t)                 # 42 nodes, the pial has 6
+    with pytest.raises(SystemExit) as e:
+        cli("from-matrix", "--left", d["gii_l"][0], other, "--matrix", _square(tmp_path, 6, 1), "--out", tmp_path / "w1")
+    assert "inflated has 42 nodes" in str(e.value.code)
+    np.save(tmp_path / "flat.npy", np.zeros(36, np.float32))
+    np.save(tmp_path / "wide.npy", np.zeros((6, 7), np.float32))
+    np.save(tmp_path / "small.npy", sym_matrix(5, 1))
+    for name, shape in (("flat.npy", "(36,)"), ("wide.npy", "(6, 7)"), ("small.npy", "(5, 5)")):
+        with pytest.raises(SystemExit) as e:
+            cli("from-matrix", "--left", d["gii_l"][0], "--matrix", tmp_path / name, "--out", tmp_path / "w2")
+        assert f"shape {shape}" in str(e.value.code) and "6 nodes" in str(e.value.code)
+    assert not (tmp_path / "w1").exists() and not (tmp_path / "w2").exists()
+
+
+@pytest.mark.parametrize("dtype", ["int8", "int16", "float32"])
+def test_from_matrix_all_options_together(tmp_path, hemi_files, dtype):
+    """--names, --overlay, --no-separate, --dtype and --name in one call."""
+    d = hemi_files
+    sulc = np.random.default_rng(31).normal(size=18).astype(np.float32)
+    np.save(d["dir"] / "lh.sulc.npy", sulc[:6])
+    np.save(d["dir"] / "rh.sulc.npy", sulc[6:])
+    out = tmp_path / "web"
+    cli("from-matrix", "--left", *d["asc_l"], "--right", *d["asc_r"], "--matrix", d["dir"] / "conn.npy",
+        "--names", "anat, blown ,ball", "--overlay", f"depth={d['dir'] / 'lh.sulc.npy'},{d['dir'] / 'rh.sulc.npy'}",
+        "--no-separate", "--dtype", dtype, "--name", "Everything", "--out", out)
+    web = read_web(out)
+    man = web["manifest"]
+    assert man["name"] == "Everything" and man["connectivity"]["dtype"] == dtype
+    assert (man["nodes"], man["leftNodes"], man["leftTriangles"]) == (18, 6, 8)
+    assert list(web["surfaces"]) == ["anat", "blown", "ball"]             # blanks around the names are dropped
+    for name, (l, r) in zip(web["surfaces"], d["geo"].values()):
+        assert np.allclose(web["surfaces"][name], np.vstack([l, r]), atol=1e-5), name
+    assert np.array_equal(web["overlays"]["depth"], sulc)
+    conn = d["conn"].astype(np.float64)
+    tol = 1e-7 if dtype == "float32" else web["scale"] / 2 * (1 + 1e-4)
+    assert np.abs(offdiag(web["conn"]) - offdiag(conn)).max() <= tol
+    top = {"int8": 127, "int16": 32767, "float32": None}[dtype]
+    assert web["scale"] == (1.0 if top is None else pytest.approx(np.abs(offdiag(conn)).max() / top, rel=1e-6))
+    assert web["raw"].dtype == np.dtype({"int8": "<i1", "int16": "<i2", "float32": "<f4"}[dtype])
 
 
 def test_from_matrix_overlays_are_concatenated_left_then_right(tmp_path, hemi_files):
@@ -1228,6 +1369,73 @@ def test_from_matrix_rejects_overlay_of_the_wrong_length(tmp_path, hemi_files):
     if isinstance(e.value, SystemExit):
         assert e.value.code not in (0, None)
     assert not (tmp_path / "web" / "glyphset.json").exists()            # nothing half-written is left behind
+
+
+def test_from_matrix_masks_nodes_without_any_connection(tmp_path, hemi_files):
+    """Empty rows and columns (the medial wall) are masked, as the browser does for the original formats and as
+    from-timeseries and nki-demo do; otherwise a web -> brainGL -> web round trip loses the mask."""
+    d = hemi_files
+    conn = d["conn"].copy()
+    for k in (2, 6, 17):
+        conn[k, :] = 0
+        conn[:, k] = 0
+    conn[2, 2] = 1.0                   # the diagonal does not count
+    conn[17, 17] = np.nan              # nor does a value that is not a number
+    np.save(tmp_path / "wall.npy", conn)
+    conn.astype("<f4").tofile(tmp_path / "wall.bin")
+    expected = [1] * 18
+    for k in (2, 6, 17):
+        expected[k] = 0
+    for matrix in ("wall.npy", "wall.bin"):
+        out = tmp_path / ("web_" + matrix[-3:])
+        cli("from-matrix", "--left", *d["gii_l"], "--right", *d["gii_r"], "--matrix", tmp_path / matrix, "--out", out)
+        web = read_web(out)
+        assert web["manifest"]["mask"] == "mask.u8"
+        assert web["mask"].tolist() == expected
+    # a matrix in which every node has data gets no mask file
+    cli("from-matrix", "--left", *d["gii_l"], "--right", *d["gii_r"], "--matrix", d["dir"] / "conn.npy", "--out", tmp_path / "full")
+    assert "mask" not in read_web(tmp_path / "full")["manifest"] and not (tmp_path / "full" / "mask.u8").exists()
+
+
+def test_nodes_with_data_matches_brute_force_in_chunks():
+    rng = np.random.default_rng(77)
+    m = rng.normal(size=(23, 23)).astype(np.float32)
+    m[rng.random((23, 23)) < 0.6] = 0
+    for k in (0, 7, 22):
+        m[k, :] = 0
+        m[:, k] = 0
+    m[9, :] = 0                        # empty row, but its column still has values: the node has data
+    np.fill_diagonal(m, 1.0)
+    expected = [any(m[i, j] != 0 or m[j, i] != 0 for j in range(23) if j != i) for i in range(23)]
+    assert not all(expected) and expected[9]
+    for chunk in (1, 4, 23, 1024):
+        assert mg.nodes_with_data(m, chunk=chunk).tolist() == expected
+
+
+def test_round_trip_keeps_the_mask(tmp_path, two_hemi):
+    """web (mask) -> brainGL (no mask file, but empty rows) -> web (mask again)."""
+    d = two_hemi
+    conn = d["conn"].copy()
+    empty = d["mask"] == 0
+    conn[empty, :] = 0
+    conn[:, empty] = 0
+    web = _write(tmp_path, {**d, "conn": conn})
+    cli("to-braingl", web, "--out", tmp_path / "bgl")
+    _braingl_to_web(tmp_path / "bgl", tmp_path / "web2", "--no-separate")
+    assert read_web(tmp_path / "web2")["mask"].tolist() == d["mask"].tolist()
+
+
+@pytest.mark.parametrize("missing", ["surface", "matrix", "overlay"])
+def test_from_matrix_reports_a_missing_file_without_a_traceback(tmp_path, hemi_files, missing):
+    d = hemi_files
+    np.save(d["dir"] / "thick.npy", np.arange(18, dtype=np.float32))
+    args = {"surface": d["gii_l"][0], "matrix": d["dir"] / "conn.npy", "overlay": d["dir"] / "thick.npy"}
+    args[missing] = tmp_path / "nowhere" / f"lh.{missing}.npy"
+    with pytest.raises(SystemExit) as e:
+        cli("from-matrix", "--left", args["surface"], "--right", d["gii_r"][0], "--matrix", args["matrix"],
+            "--overlay", f"x={args['overlay']}", "--out", tmp_path / "web")
+    assert str(e.value.code).startswith("error:") and "nowhere" in str(e.value.code)
+    assert not (tmp_path / "web").exists()
 
 
 def test_from_matrix_rejects_matrix_with_the_wrong_node_count(tmp_path, hemi_files):
@@ -1271,6 +1479,87 @@ def test_cli_subprocess_help_lists_the_sub_commands():
     assert res.returncode == 0
     for cmd in ("from-matrix", "from-timeseries", "nki-demo", "to-braingl"):
         assert cmd in res.stdout
+    assert "fsaverage3" in res.stdout and "scipy" in res.stdout
+
+
+def _help(capsys, *args):
+    with pytest.raises(SystemExit) as e:
+        mg.main([*args, "--help"])
+    assert e.value.code == 0
+    return capsys.readouterr().out
+
+
+@pytest.mark.parametrize("cmd,options", [
+    ("from-matrix", ["--left", "--right", "--names", "--overlay", "--no-separate", "--dtype", "--name", "--out", "--matrix"]),
+    ("from-timeseries", ["--left", "--right", "--names", "--overlay", "--no-separate", "--dtype", "--name", "--out", "--timeseries"]),
+    ("nki-demo", ["--subjects", "--mesh", "--hemi", "--dtype", "--data-dir", "--out"]),
+    ("to-braingl", ["glyphset", "--out", "--min-threshold"]),
+])
+def test_help_explains_every_option(capsys, cmd, options):
+    """Every option of every sub-command has a help text (argparse prints the bare option otherwise)."""
+    text = _help(capsys, cmd)
+    entries = _help_entries(text)
+    for opt in options:
+        assert opt in entries, f"{cmd}: {opt} is not listed"
+        assert len(entries[opt]) >= 15, f"{cmd} {opt}: no help text ({entries[opt]!r})"
+    assert set(entries) - {"-h"} == set(options)            # and the list above is complete
+
+
+def _help_entries(text):
+    """{option: help text} from argparse's output: an entry starts on a line indented by two blanks, its help
+    text is whatever follows two or more blanks after the option's signature, plus the continuation lines."""
+    entries, current = {}, None
+    for line in text[text.index("\n\n", text.index("usage:")):].split("\n"):
+        m = re.match(r"  (\S+)", line)
+        if m:
+            current = m.group(1).rstrip(",")
+            rest = line.strip().partition("  ")[2]
+            entries[current] = rest.strip()
+        elif current and line.startswith("   "):
+            entries[current] = (entries[current] + " " + line.strip()).strip()
+        else:
+            current = None
+    return entries
+
+
+def test_help_entries_parser_notices_a_missing_help_text():
+    text = ("usage: tool [-h] --out OUT [--dtype {int8,int16,float32}]\n\noptions:\n"
+            "  -h, --help            show this help message and exit\n"
+            "  --out OUT\n"
+            "  --dtype {int8,int16,float32}\n"
+            "                        how the values are stored\n"
+            "  --name NAME           short\n")
+    assert _help_entries(text) == {"-h": "show this help message and exit", "--out": "",
+                                   "--dtype": "how the values are stored", "--name": "short"}
+
+
+def test_help_statements_are_true(capsys, tmp_path, hemi_files):
+    """The facts the help texts state, checked against the tool."""
+    text = " ".join(_help(capsys, "from-matrix").split())
+    # "moved apart along x until they are 5 mm apart", except these surfaces
+    assert "5 mm apart" in text
+    for name in mg.ANATOMICAL:
+        assert name in text
+    assert "pial_2" in text and mg.unique_names(["pial", "pial"]) == ["pial", "pial_2"]
+    assert "1/127" in text and "1/32767" in text
+    assert "only the upper triangle is stored" in text
+    d = hemi_files
+    asym = d["conn"].copy()
+    asym[np.tril_indices(18, k=-1)] = 0.123                      # the lower triangle is ignored
+    np.save(tmp_path / "asym.npy", asym)
+    cli("from-matrix", "--left", *d["gii_l"], "--right", *d["gii_r"], "--matrix", tmp_path / "asym.npy",
+        "--dtype", "float32", "--out", tmp_path / "web")
+    assert np.array_equal(read_web(tmp_path / "web")["raw"], d["conn"][np.triu_indices(18, k=1)])
+    assert (tmp_path / "web" / "glyphset.json").is_file()        # "--out: created if needed, receives glyphset.json"
+    assert read_web(tmp_path / "web")["manifest"]["name"] == "web"    # "--name: default the name of the output folder"
+
+    text = " ".join(_help(capsys, "nki-demo").split())
+    assert "642, 2562 (default) or 10242" in text and "(default: 40)" in text
+    ns = [icosphere(k)[0].shape[0] for k in (3, 4, 5)]
+    assert ns == [642, 2562, 10242]
+
+    text = " ".join(_help(capsys, "to-braingl").split())
+    assert "(default: 0.5)" in text and "data.glyphset" in text and "connectivity.bin" in text and "diagonal is set to 1" in text
 
 
 # ============================================================== from-timeseries
@@ -1362,14 +1651,91 @@ def test_from_timeseries_mask_covers_both_hemispheres(tmp_path, hemi_files):
     assert read_web(out)["mask"].tolist() == expected
 
 
-def test_from_timeseries_removes_its_temporary_matrix_after_an_error(tmp_path):
+def test_from_timeseries_leaves_nothing_behind_after_an_error(tmp_path):
     v, t = icosphere(0)
     surf = write_gii_surface(tmp_path / "lh.pial.gii", v * 50, t)
     np.save(tmp_path / "ts.npy", np.random.default_rng(45).normal(size=(7, 30)).astype(np.float32))   # 7 rows, 12 nodes
     out = tmp_path / "web"
-    with pytest.raises((SystemExit, AssertionError)):
+    with pytest.raises(SystemExit) as e:
         cli("from-timeseries", "--left", surf, "--timeseries", tmp_path / "ts.npy", "--out", out)
-    assert not (out / "_conn.npy").exists()
+    assert "shape (7, 7)" in str(e.value.code) and "12 nodes" in str(e.value.code)
+    assert not out.exists()                       # neither a temporary matrix nor an empty folder
+
+
+def _reported_megabytes(text):
+    m = re.search(r"\((\d+) nodes, ([0-9.]+) MB\)", text)
+    assert m, text
+    return int(m.group(1)), float(m.group(2))
+
+
+@pytest.mark.parametrize("dtype", ["int8", "int16", "float32"])
+def test_from_timeseries_reports_the_size_of_what_it_wrote(tmp_path, capsys, monkeypatch, dtype):
+    """The float32 correlation matrix used to be parked in the output folder as _conn.npy while the size was
+    added up: 1.6 MB too much for 642 nodes (the int8 glyphset itself is 0.2 MB)."""
+    v, t = icosphere(3)
+    assert v.shape[0] == 642
+    surf = write_gii_surface(tmp_path / "lh.pial.gii", v * 50, t)
+    np.save(tmp_path / "ts.npy", np.random.default_rng(46).normal(size=(642, 50)).astype(np.float32))
+    out = tmp_path / "web"
+    seen = []
+    real = mg.write_glyphset
+
+    def spy(folder, *args, **kw):
+        folder = Path(folder)
+        seen.append(sorted(p.name for p in folder.iterdir()) if folder.exists() else [])
+        return real(folder, *args, **kw)
+
+    monkeypatch.setattr(mg, "write_glyphset", spy)
+    before = {p.name for p in tmp_path.iterdir()}
+    cli("from-timeseries", "--left", surf, "--timeseries", tmp_path / "ts.npy", "--dtype", dtype, "--out", out)
+    assert seen == [[]]                                   # the output folder is empty when the glyphset is written
+    assert {p.name for p in tmp_path.iterdir()} == before | {"web"}       # and nothing appears next to it
+    nodes, megabytes = _reported_megabytes(capsys.readouterr().out)
+    actual = sum(p.stat().st_size for p in out.iterdir())
+    assert nodes == 642
+    assert abs(megabytes - actual / 1e6) <= 0.05 + 1e-9, (megabytes, actual)
+    per_value = {"int8": 1, "int16": 2, "float32": 4}[dtype]
+    assert (out / read_web(out)["manifest"]["connectivity"]["file"]).stat().st_size == 642 * 641 // 2 * per_value
+    assert not list(out.glob("_conn*")) and not list(out.glob("*.npy"))
+
+
+def test_from_matrix_reports_the_size_of_what_it_wrote(tmp_path, capsys, hemi_files):
+    d = hemi_files
+    out = tmp_path / "web"
+    cli("from-matrix", "--left", *d["gii_l"], "--right", *d["gii_r"], "--matrix", d["dir"] / "conn.bin", "--out", out)
+    nodes, megabytes = _reported_megabytes(capsys.readouterr().out)
+    assert nodes == 18
+    assert abs(megabytes - sum(p.stat().st_size for p in out.iterdir()) / 1e6) <= 0.05 + 1e-9
+
+
+@pytest.mark.parametrize("dtype", ["int8", "int16", "float32"])
+def test_from_timeseries_all_options_together(tmp_path, hemi_files, dtype):
+    d = hemi_files
+    rng = np.random.default_rng(47)
+    shared = rng.normal(size=(1, 90))
+    tl = (rng.normal(size=(6, 90)) + shared).astype(np.float32)
+    tr = (rng.normal(size=(12, 90)) + 0.5 * shared).astype(np.float32)
+    tr[4] = 0                                                               # one empty node
+    np.save(d["dir"] / "l.npy", tl)
+    fr = write_gii_scalars(d["dir"] / "rh.func.gii", tr)
+    np.save(d["dir"] / "thick.npy", np.arange(18, dtype=np.float32))
+    out = tmp_path / "web"
+    cli("from-timeseries", "--left", *d["gii_l"], "--right", *d["gii_r"], "--timeseries", d["dir"] / "l.npy", fr,
+        "--names", "p,i,s", "--overlay", f"thick={d['dir'] / 'thick.npy'}", "--no-separate", "--dtype", dtype,
+        "--name", "TS", "--out", out)
+    web = read_web(out)
+    assert web["manifest"]["name"] == "TS" and list(web["surfaces"]) == ["p", "i", "s"]
+    for name, (l, r) in zip(web["surfaces"], d["geo"].values()):
+        assert np.array_equal(web["surfaces"][name], np.vstack([l, r])), name          # not separated
+    assert np.array_equal(web["overlays"]["thick"], np.arange(18, dtype=np.float32))
+    mask = [1] * 18
+    mask[6 + 4] = 0
+    assert web["mask"].tolist() == mask
+    keep = [i for i in range(18) if i != 10]
+    expected = np.zeros((18, 18))
+    expected[np.ix_(keep, keep)] = np.corrcoef(np.vstack([tl, tr])[keep].astype(np.float64))
+    tol = 1e-5 if dtype == "float32" else web["scale"] / 2 + 1e-5
+    assert np.abs(offdiag(web["conn"]) - offdiag(expected)).max() <= tol
 
 
 # =================================================================== to-braingl
@@ -1518,6 +1884,66 @@ def test_cli_subprocess_to_braingl(tmp_path, web_two_hemi):
     assert (out / "data.glyphset").is_file() and (out / "connectivity.bin").stat().st_size == 12 * 12 * 4
 
 
+def test_to_braingl_surface_names_become_safe_distinct_file_names(tmp_path):
+    """A .set file separates the file name from the offsets by blanks, and two surfaces must not share a file."""
+    v, t = icosphere(0)
+    conn = sym_matrix(12, 71)
+    web = tmp_path / "web"
+    mg.write_glyphset(web, "x", [("my pial", v * 60), ("my  pial", v * 70), ("my_pial", v * 80)], t, conn)
+    assert [s["name"] for s in read_web(web)["manifest"]["surfaces"]] == ["my pial", "my  pial", "my_pial"]
+    out = tmp_path / "bgl"
+    cli("to-braingl", web, "--out", out)
+    listed = [l for l in (out / "all.set").read_text().split("\n") if l]
+    assert listed == ["my_pial.asc", "my_pial_2.asc", "my_pial_3.asc"]
+    assert all(len(l.split()) == 1 for l in listed)
+    for name, radius in zip(listed, (60, 70, 80)):
+        xyz, tri = read_asc(out / name)
+        assert np.allclose(xyz, v * radius, atol=1e-4) and np.array_equal(tri, t)
+
+
+def test_round_trip_of_numbered_duplicate_surfaces(tmp_path):
+    """lh.sphere + lh.sphere.reg -> web (sphere, sphere_2) -> brainGL -> web keeps both surfaces apart."""
+    v, t = icosphere(0)
+    reg = v[:, [1, 2, 0]]
+    nib.freesurfer.write_geometry(str(tmp_path / "lh.sphere"), v.astype(np.float64) * 100, t)
+    nib.freesurfer.write_geometry(str(tmp_path / "lh.sphere.reg"), reg.astype(np.float64) * 100, t)
+    cli("from-matrix", "--left", tmp_path / "lh.sphere", tmp_path / "lh.sphere.reg",
+        "--matrix", _square(tmp_path, 12, 1), "--dtype", "int16", "--out", tmp_path / "web")
+    cli("to-braingl", tmp_path / "web", "--out", tmp_path / "bgl")
+    assert (tmp_path / "bgl" / "all.set").read_text().split() == ["sphere.asc", "sphere_2.asc"]
+    _braingl_to_web(tmp_path / "bgl", tmp_path / "web2", "--dtype", "int16")
+    a, b = read_web(tmp_path / "web"), read_web(tmp_path / "web2")
+    assert list(a["surfaces"]) == list(b["surfaces"]) == ["sphere", "sphere_2"]
+    assert np.allclose(b["surfaces"]["sphere"], v * 100, atol=1e-4)
+    assert np.allclose(b["surfaces"]["sphere_2"], reg * 100, atol=1e-4)
+    assert np.array_equal(a["raw"], b["raw"])
+
+
+@pytest.mark.parametrize("dtype", ["int8", "int16", "float32"])
+def test_round_trip_through_the_command_line_with_overlay_names_and_no_separate(tmp_path, hemi_files, dtype):
+    """from-matrix (--names, --overlay, --no-separate, --dtype) -> to-braingl -> from-matrix gives the same glyphset."""
+    d = hemi_files
+    np.save(d["dir"] / "sulc.npy", np.linspace(-1, 1, 18).astype(np.float32))
+    common = ["--names", "pial,inflated,sphere", "--overlay", f"sulc={d['dir'] / 'sulc.npy'}", "--no-separate", "--dtype", dtype]
+    cli("from-matrix", "--left", *d["gii_l"], "--right", *d["gii_r"], "--matrix", d["dir"] / "conn.npy", *common,
+        "--out", tmp_path / "web")
+    cli("to-braingl", tmp_path / "web", "--out", tmp_path / "bgl", "--min-threshold", "0.3")
+    _braingl_to_web(tmp_path / "bgl", tmp_path / "web2", *common)
+    a, b = read_web(tmp_path / "web"), read_web(tmp_path / "web2")
+    for key in ("nodes", "leftNodes", "leftTriangles", "triangles", "surfaces", "overlays"):
+        assert a["manifest"][key] == b["manifest"][key], key
+    assert b["scale"] == pytest.approx(a["scale"], rel=1e-6)
+    assert np.array_equal(a["triangles"], b["triangles"])
+    for name in ("pial", "inflated", "sphere"):
+        assert np.allclose(a["surfaces"][name], b["surfaces"][name], atol=1e-5), name
+    assert np.array_equal(a["overlays"]["sulc"], b["overlays"]["sulc"])
+    assert np.array_equal(a["raw"], b["raw"])
+    m = np.fromfile(tmp_path / "bgl" / "connectivity.bin", dtype="<f4").reshape(18, 18)
+    assert np.array_equal(m, m.T) and np.array_equal(np.diag(m), np.ones(18, np.float32))
+    tol = 1e-7 if dtype == "float32" else a["scale"] / 2 * (1 + 1e-4)
+    assert np.abs(offdiag(m) - offdiag(d["conn"].astype(np.float64))).max() <= tol + 1e-7
+
+
 # =================================================================== round trips
 def _braingl_to_web(bgl, out, *extra):
     """Follow data.glyphset -> .set -> .asc as brainGL does and convert back."""
@@ -1593,6 +2019,31 @@ def test_round_trip_single_mesh(tmp_path):
 
 
 # ===================================================================== nki-demo
+def test_nki_description_and_credit_match_the_shipped_demo():
+    """The bundled demo carries its credit; the tool writes the same wording (no nilearn needed here)."""
+    example = REPO / "public" / "data" / "nki_fsaverage4" / "glyphset.json"
+    if not example.exists():
+        pytest.skip("demo data set is not present")
+    ref = json.loads(example.read_text())
+    assert mg.nki_description(ref["subjects"], "fsaverage4", ["left", "right"]) == ref["description"]
+    assert mg.nki_credit("fsaverage4") == ref["credit"]
+    assert mg.NKI_SOURCE == ref["source"]
+    assert ref["name"] == f"NKI Rockland average (n={ref['subjects']}, fsaverage4)"
+
+
+def test_nki_description_names_subjects_mesh_and_hemisphere():
+    both = mg.nki_description(40, "fsaverage4", ["left", "right"])
+    assert "of 40 participants" in both and "FreeSurfer fsaverage4 surface, both hemispheres." in both
+    assert "Nooner et al. 2012" in both and "doi:10.3389/fnins.2012.00152" in both
+    assert mg.nki_description(7, "fsaverage5", ["left"]).endswith("FreeSurfer fsaverage5 surface, left hemisphere.")
+    assert "of 7 participants" in mg.nki_description(7, "fsaverage5", ["left"])
+    assert mg.nki_description(1, "fsaverage3", ["right"]).endswith("fsaverage3 surface, right hemisphere.")
+    assert "of 1 participant of the" in mg.nki_description(1, "fsaverage3", ["right"])
+    credit = mg.nki_credit("fsaverage5")
+    assert "Nathan Kline Institute - Rockland Sample (Nooner et al. 2012)" in credit
+    assert "Surfaces: FreeSurfer fsaverage5 (Fischl et al. 1999)." in credit
+
+
 def _fake_nki(tmp_path, monkeypatch, subjects, mesh_level):
     """Local stand-ins for nilearn's fetchers: fsaverage5-sized icospheres and
     random 'resting-state' time series.  Nothing is downloaded."""
@@ -1670,6 +2121,11 @@ def test_nki_demo_group_average_on_local_synthetic_data(tmp_path, monkeypatch):
     man = web["manifest"]
     assert man["nodes"] == 2 * nk and man["leftNodes"] == nk and man["leftTriangles"] == len(fake["tk"])
     assert man["subjects"] == 2
+    assert man["name"] == "NKI Rockland average (n=2, fsaverage3)"
+    assert man["description"] == mg.nki_description(2, "fsaverage3", ["left", "right"])
+    assert "of 2 participants" in man["description"] and man["description"].endswith("fsaverage3 surface, both hemispheres.")
+    assert man["credit"] == mg.nki_credit("fsaverage3") and "fsaverage3" in man["credit"]
+    assert man["source"] == mg.NKI_SOURCE
     assert [s["name"] for s in man["surfaces"]] == ["pial", "inflated", "sphere", "white"]
     assert list(web["overlays"]) == ["sulc", "curv"]
     assert ("nki", 2) in fake["calls"] and ("fsaverage", "fsaverage3") in fake["calls"]
@@ -1699,6 +2155,8 @@ def test_nki_demo_single_hemisphere(tmp_path, monkeypatch):
     web = read_web(out)
     nk = fake["nk"]
     assert web["n"] == nk and web["manifest"]["leftNodes"] == 0 and web["manifest"]["leftTriangles"] == 0
+    assert web["manifest"]["description"].endswith("fsaverage3 surface, right hemisphere.")
+    assert "of 1 participant of" in web["manifest"]["description"]
     assert np.array_equal(web["surfaces"]["sphere"], fake["geo"]["sphere", "right"])     # a lone hemisphere is not moved
     assert np.array_equal(web["triangles"], fake["tk"])
     expected, valid = _expected_group_average(fake, ["right"], 1)

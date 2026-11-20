@@ -2,7 +2,7 @@
  "format": "braingl-web-glyphset",
  "version": 1,
  "name": "NKI Rockland average (n=40, fsaverage4)",
- "description": "Group-average resting-state functional connectivity (Pearson r, Fisher-z averaged) of 40 participants of the enhanced NKI Rockland sample, fsaverage4 (both hemispheres).",
+ "description": "Group-average resting-state functional connectivity (Pearson r, Fisher-z averaged) of 40 participants of the enhanced NKI Rockland Sample (Nooner et al. 2012, doi:10.3389/fnins.2012.00152) on the FreeSurfer fsaverage4 surface, both hemispheres.",
  "nodes": 5124,
  "leftNodes": 2562,
  "leftTriangles": 5120,
@@ -43,5 +43,6 @@
   "scale": 0.0075928428041653374
  },
  "source": "http://fcon_1000.projects.nitrc.org/indi/enhanced/",
- "subjects": 40
+ "subjects": 40,
+ "credit": "Data: enhanced Nathan Kline Institute - Rockland Sample (Nooner et al. 2012), 1000 Functional Connectomes Project / INDI. Surfaces: FreeSurfer fsaverage4 (Fischl et al. 1999)."
 }

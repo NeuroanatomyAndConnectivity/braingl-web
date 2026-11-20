@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
+  CURV_HEADER_BYTES,
+  hasFreeSurferCurvOrQuadMagic,
   isFreeSurferCurv,
   isFreeSurferSurface,
   parseFreeSurferCurv,
@@ -115,6 +117,28 @@ describe("parseFreeSurferCurv", () => {
     expect(isFreeSurferCurv(new ArrayBuffer(1))).toBe(false);
     // right magic, but the vertex count cannot fit: not a curv file
     expect(isFreeSurferCurv(buildCurv([1, 2, 3], 1, 1000))).toBe(false);
+  });
+
+  it("recognises a file from its first 15 bytes when the file size is given", () => {
+    const whole = buildCurv([1, 2, 3, 4, 5]);
+    const head = whole.slice(0, CURV_HEADER_BYTES);
+    expect(CURV_HEADER_BYTES).toBe(15);
+    expect(isFreeSurferCurv(head)).toBe(false); // on its own the header announces more than 15 bytes
+    expect(isFreeSurferCurv(head, whole.byteLength)).toBe(true);
+    expect(isFreeSurferCurv(head, whole.byteLength + 100)).toBe(true); // a trailer is tolerated
+    expect(isFreeSurferCurv(head, whole.byteLength - 1)).toBe(false); // truncated
+    expect(isFreeSurferCurv(whole.slice(0, 14), whole.byteLength)).toBe(false); // header incomplete
+    expect(isFreeSurferCurv(whole.slice(0, 3), whole.byteLength)).toBe(false); // what the loader used to sniff
+    expect(isFreeSurferCurv(buildCurv([1, 2, 3, 4], 2).slice(0, 15), 31)).toBe(true); // two values per vertex still fit
+    expect(isFreeSurferCurv(buildCurv([1, 2], 1, -1).slice(0, 15), 1e6)).toBe(false);
+  });
+
+  it("tells the curvature / quadrangle magic numbers from everything else", () => {
+    expect(hasFreeSurferCurvOrQuadMagic(buildCurv([1, 2, 3]))).toBe(true);
+    expect(hasFreeSurferCurvOrQuadMagic(new Uint8Array([0xff, 0xff, 0xfd, 0]).buffer)).toBe(true);
+    expect(hasFreeSurferCurvOrQuadMagic(buildSurface("c\n\n"))).toBe(false);
+    expect(hasFreeSurferCurvOrQuadMagic(new Float32Array([1, 0.5]).buffer)).toBe(false);
+    expect(hasFreeSurferCurvOrQuadMagic(new ArrayBuffer(2))).toBe(false);
   });
 
   describe("errors", () => {

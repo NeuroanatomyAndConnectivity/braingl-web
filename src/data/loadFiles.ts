@@ -3,8 +3,9 @@ import type { GlyphDataset, Overlay, Surface } from "./dataset";
 import { orientOutward, validateDataset } from "./dataset";
 import { isWebManifest, loadWebGlyphset } from "./loadWeb";
 import {
-  giftiToMesh, giftiToScalars, isFreeSurferCurv, isFreeSurferSurface, isNpy, parseFreeSurferAsc, parseFreeSurferCurv,
-  parseFreeSurferSurface, parseGifti, parseGlyphsetFile, parseNpy, parseRoiFile, parseSetFile, TriMesh,
+  CURV_HEADER_BYTES, giftiToMesh, giftiToScalars, hasFreeSurferCurvOrQuadMagic, isFreeSurferCurv, isFreeSurferSurface, isNpy,
+  parseFreeSurferAsc, parseFreeSurferCurv, parseFreeSurferSurface, parseGifti, parseGlyphsetFile, parseNpy, parseRoiFile,
+  parseSetFile, TriMesh,
 } from "../io";
 
 type Status = (msg: string, fraction?: number) => void;
@@ -74,6 +75,12 @@ async function readMatrix(f: File, n: number, status?: Status): Promise<ConnMatr
   const m = await ConnMatrix.fromFloat32Blob(f, (fr) => status?.("Reading " + f.name + "…", fr));
   if (n && m.n !== n) throw new Error(`${f.name} is a ${m.n} x ${m.n} matrix but the surfaces have ${n} nodes`);
   return m;
+}
+
+/** True when a file of this size can hold a square float32 matrix. */
+function isSquareFloat32(bytes: number): boolean {
+  const n = Math.round(Math.sqrt(bytes / 4));
+  return n > 0 && n * n * 4 === bytes;
 }
 
 function hemiOf(name: string): "L" | "R" | null {
@@ -185,12 +192,16 @@ export async function loadFromFiles(files: File[], status?: Status): Promise<Loa
       if (!matrixFile || f.size > matrixFile.size) matrixFile = f;
       continue;
     }
-    const head = await f.slice(0, 3).arrayBuffer();
+    // sniff the type: the curvature test needs the whole 15-byte header, not just the magic number
+    const head = await f.slice(0, CURV_HEADER_BYTES).arrayBuffer();
     if (isFreeSurferSurface(head)) {
       const mesh = await readMesh(f);
       if (mesh) meshes.push({ file: f, mesh, hemi: hemiOf(f.name), label: surfaceLabel(f.name) });
-    } else if (isFreeSurferCurv(head)) {
+    } else if (isFreeSurferCurv(head, f.size)) {
       scalars.push({ file: f, data: parseFreeSurferCurv(await f.arrayBuffer()), hemi: hemiOf(f.name) });
+    } else if (hasFreeSurferCurvOrQuadMagic(head) && !isSquareFloat32(f.size)) {
+      // a truncated curvature file or a quadrangle surface: never a candidate for the connectivity matrix
+      notes.push(`skipped "${base(f.name)}" (FreeSurfer curvature / quadrangle file that could not be read)`);
     } else if (!matrixFile || f.size > matrixFile.size) {
       matrixFile = f;
     }

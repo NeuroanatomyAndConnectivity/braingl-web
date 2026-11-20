@@ -1,12 +1,15 @@
 # Installation
 
 **Goal:** run brainGL web on your own computer.
-**You need:** a terminal, [Node.js](https://nodejs.org/) version 20 or newer (it includes `npm`),
-and a browser with WebGL2.
+**You need:** a terminal, [git](https://git-scm.com/), [Node.js](https://nodejs.org/) version 20
+or newer (it includes `npm`), and a browser with WebGL2.
 **Result:** the app open at <http://localhost:5173> with the demo data loaded.
 
-If somebody has already put a copy of brainGL web on a web server for you, you do not need to
-install anything: open that address and go to the [Quick start](quickstart.md).
+You do not need to install anything to use the app: a hosted copy is at
+<https://neuroanatomyandconnectivity.github.io/braingl-web/>. Open it and go to the
+[Quick start](quickstart.md). Files you open there are read by your browser and are not
+uploaded. Install your own copy if you want to work offline, serve your own data to
+colleagues, convert data with the Python tool, or change the code.
 
 ## Requirements
 
@@ -17,17 +20,17 @@ install anything: open that address and go to the [Quick start](quickstart.md).
   these browsers provide. A dedicated graphics card helps with large glyphsets but is not required
   for the demo. See [Limits](../reference/limits.md) for details.
 - **Python 3** with `numpy` and `nibabel` only if you want to convert your own data with
-  `tools/make_glyphset.py` (see [Your own data](../tutorials/own-data.md)).
+  `tools/make_glyphset.py`; add `scipy` and `nilearn` to rebuild the demo data or to follow the
+  example in [Your own data](../tutorials/own-data.md).
 - **Blender 3.6 or newer** only if you want to render exported scenes
   (see [Blender export](../tutorials/blender.md)).
 
 ## Install and run
 
-1. Get the source code. The location of the public repository is not fixed yet; replace
-   `<repository-url>` with the address you were given.
+1. Get the source code.
 
     ```bash
-    git clone <repository-url> braingl-web
+    git clone https://github.com/NeuroanatomyAndConnectivity/braingl-web.git
     cd braingl-web
     ```
 
@@ -44,7 +47,8 @@ install anything: open that address and go to the [Quick start](quickstart.md).
     ```
 
 4. Open <http://localhost:5173> in your browser. The demo glyphset (about 13.5 MB) loads from
-   your own computer and the left hemisphere appears with point glyphs.
+   your own computer; a progress box shows the download, then the inflated surface appears in a
+   left lateral view with point glyphs.
 
 Stop the server with Ctrl+C in the terminal. Your settings in the app are kept by the browser
 between sessions.
@@ -65,12 +69,19 @@ To put the result on a server, with or without your own data, see
 ## Check the installation
 
 ```bash
-npm test             # unit tests
 npm run typecheck    # TypeScript type check
+npm test             # unit and integration tests
 ```
 
-Both should finish without errors. [Testing](../development/testing.md) describes what the
-tests cover.
+Both should finish without errors. Three further suites need extra software:
+
+```bash
+npm run test:e2e                     # builds, then drives the app in headless Chrome
+python -m pytest tests/python -q     # the data tool; needs numpy, scipy, nibabel and pytest
+blender --background --python tests/blender/test_import.py   # the Blender import script
+```
+
+[Testing](../development/testing.md) describes what the tests cover.
 
 ## Problems
 

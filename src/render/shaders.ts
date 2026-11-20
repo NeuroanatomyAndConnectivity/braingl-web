@@ -2,6 +2,7 @@ import common from "../shaders/common.glsl?raw";
 import pointsVert from "../shaders/points.vert.glsl?raw";
 import vectorsVert from "../shaders/vectors.vert.glsl?raw";
 import piesVert from "../shaders/pies.vert.glsl?raw";
+import piesFrag from "../shaders/pies.frag.glsl?raw";
 import diffVert from "../shaders/diff.vert.glsl?raw";
 import primsFrag from "../shaders/prims.frag.glsl?raw";
 import littleVert from "../shaders/littlebrain.vert.glsl?raw";
@@ -17,7 +18,7 @@ const inc = (src: string) => src.replace("#include common", common);
 export const SHADERS = {
   points: [inc(pointsVert), primsFrag],
   vectors: [inc(vectorsVert), primsFrag],
-  pies: [inc(piesVert), primsFrag],
+  pies: [inc(piesVert), piesFrag],
   diff: [inc(diffVert), primsFrag],
   little: [inc(littleVert), littleFrag],
   surface: [surfaceVert, surfaceFrag],

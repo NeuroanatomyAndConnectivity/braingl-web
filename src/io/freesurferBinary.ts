@@ -23,18 +23,29 @@ export function isFreeSurferSurface(buf: ArrayBuffer): boolean {
   return magic3(buf) === TRIANGLE_MAGIC;
 }
 
+/** Bytes of a new-curv file that isFreeSurferCurv() needs: magic, vertex count, face count, values per vertex. */
+export const CURV_HEADER_BYTES = 15;
+
 /**
  * True when the buffer starts with the new-curv magic FF FF FF and its header
  * is consistent with the file size (old quad surfaces share the magic number).
+ * `buf` may be just the first CURV_HEADER_BYTES bytes of a file when the size
+ * of the whole file is given as `fileSize`.
  */
-export function isFreeSurferCurv(buf: ArrayBuffer): boolean {
-  if (magic3(buf) !== NEW_CURV_MAGIC || buf.byteLength < 15) return false;
+export function isFreeSurferCurv(buf: ArrayBuffer, fileSize: number = buf.byteLength): boolean {
+  if (magic3(buf) !== NEW_CURV_MAGIC || buf.byteLength < CURV_HEADER_BYTES) return false;
   const dv = new DataView(buf);
   const nVerts = dv.getInt32(3, false);
   const nFaces = dv.getInt32(7, false);
   const valsPerVertex = dv.getInt32(11, false);
   if (nVerts < 0 || nFaces < 0 || valsPerVertex < 1) return false;
-  return 15 + nVerts * valsPerVertex * 4 <= buf.byteLength;
+  return CURV_HEADER_BYTES + nVerts * valsPerVertex * 4 <= Math.max(fileSize, buf.byteLength);
+}
+
+/** True when the buffer starts with FF FF FF (new curvature file or old quad surface) or FF FF FD (new quad surface). */
+export function hasFreeSurferCurvOrQuadMagic(buf: ArrayBuffer): boolean {
+  const m = magic3(buf);
+  return m === NEW_CURV_MAGIC || m === NEW_QUAD_MAGIC;
 }
 
 /**

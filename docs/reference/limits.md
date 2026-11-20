@@ -14,7 +14,9 @@ What the app can and cannot do, and where the limits come from.
   the LIC render targets). Without it the workspace shows "Your browser does not support
   EXT_color_buffer_float; LIC requires it." and does not start.
 - Bundling uses a module Web Worker; gzip-compressed GIFTI data needs `DecompressionStream`.
-- Everything runs locally in the browser: no data is uploaded.
+- Everything runs locally in the browser: no data is uploaded. The `?data=` URL parameter accepts only same-origin
+  addresses (the folder must be served from the same site as the app); other addresses are ignored with a warning in
+  the browser console.
 
 ## Node limit
 
@@ -59,7 +61,7 @@ All connexels above a threshold are sent to the GPU as 8-byte instances `(i, j, 
 number is bounded by the **connexel budget** (`budgetM`, 0.5 to 40 million, default 4 million). At
 the start and whenever the sign, hemisphere, painted region or budget changes, the app builds the
 cumulative histogram of `abs(value)` over the glyph nodes (2000 bins from 0 to the largest
-absolute value) and picks the smallest threshold whose count fits the budget. Connexels below
+absolute value) and picks the smallest threshold whose count fits the budget (it never overshoots it). Connexels below
 that **build threshold** are never uploaded; the `threshold` slider can go lower but has no
 effect below the build threshold, and the status line then says "threshold limited to t by the
 connexel budget". Raising the budget lowers the build threshold, at the cost of memory and
@@ -69,7 +71,7 @@ frame time.
 |---|---|
 | Points, vectors | 8 bytes per connexel on the GPU (4 M budget: 32 MB; 40 M: 320 MB). |
 | Pies | The same 8 bytes (re-sorted copy), plus 4 bytes of rank per connexel, plus a CPU copy. |
-| Diffpoints | 12 bytes per edge-target pair; the build threshold is raised in steps of 2.5 % of the maximum until the count fits the budget. |
+| Diffpoints | 12 bytes per edge-target pair; the count is taken from one histogram of the strongest endpoint value (one bin per raw 16-bit magnitude) and the threshold is the smallest one, at or above `max(0.5 * buildThreshold, 0.15 * maxAbs)`, whose count fits the budget. |
 | Little brains | A row texture of `instances * n` int16 values (200 instances at 5,124 nodes: 2 MB). |
 | Position textures | One `RGBA32F` texture of width 1024 and `ceil(n / 1024)` rows per surface. |
 
@@ -105,6 +107,11 @@ also the granularity of the build threshold.
 | Blender export | 400,000 primitives per layer from the browser; pies at most 48 wedges each; little brains at most `min(lbMax, floor(4e6 / n))` copies | `bake.ts`, `exportState` |
 | Screenshot scale | 1 to 8 | slider range |
 | `.glyphset` hemispheres | 2 | loader |
+
+## Known upstream issue
+
+The Directionality workspace calls `generateMipmap` on its depth texture in every frame, which WebGL2 rejects with a
+console warning. It is harmless. The fix belongs in directionality-indicator-webgl and will be re-vendored.
 
 ## What is not ported from brainGL
 

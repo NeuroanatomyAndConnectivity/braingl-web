@@ -2,6 +2,10 @@ site_name: brainGL web
 site_description: >-
   Connectivity glyphs, connection bundling and directionality maps for dense
   brain connectivity on cortical surfaces, in the browser.
+site_url: https://neuroanatomyandconnectivity.github.io/braingl-web/docs/
+repo_url: https://github.com/NeuroanatomyAndConnectivity/braingl-web
+repo_name: NeuroanatomyAndConnectivity/braingl-web
+edit_uri: edit/main/docs/
 docs_dir: docs
 
 theme:
@@ -85,3 +89,4 @@ nav:
       - Citing: about/citing.md
       - License: about/license.md
       - Changelog: about/changelog.md
+  - Open the app: https://neuroanatomyandconnectivity.github.io/braingl-web/

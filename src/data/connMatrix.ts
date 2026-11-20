@@ -41,20 +41,50 @@ export class ConnMatrix {
     return this.data.subarray(i * this.n, (i + 1) * this.n);
   }
 
-  /** Convert a threshold in value units to raw int16 units (rounded up so `raw > t` is conservative). */
+  /** Convert a threshold in value units to (fractional) raw int16 units. */
   toRaw(v: number): number {
     return v / this.scale;
   }
 
+  private binTable: Uint16Array | null = null;
+
   /**
-   * Cumulative histogram of |value| over the given rows: cum[b] = number of
-   * entries with |value| >= b / HIST_BINS * maxAbs. Used for the percentile
-   * slider and for fitting the connexel count to the GPU budget.
+   * Histogram bin of every raw magnitude 0..32768. Bin b starts at the raw value
+   * that buildConnexels() uses as its lower bound for the threshold
+   * b / HIST_BINS * maxAbs, namely max(1, floor(threshold / scale)), computed
+   * with the very same floating-point operations (floor(maxAbs / scale) is
+   * 32766 for some scales). Magnitudes above the builders' upper bound
+   * ceil(maxAbs / scale) go to the spare slot HIST_BINS + 1, which is not counted.
+   */
+  private bins(): Uint16Array {
+    if (this.binTable) return this.binTable;
+    const table = new Uint16Array(32769);
+    const maxAbs = this.maxAbs, scale = this.scale;
+    // first raw magnitude of bin b: the same expression as thresholdForBudget() followed by the builders' rawBounds()
+    const first = (b: number): number => Math.max(1, Math.floor(((b / HIST_BINS) * maxAbs) / scale));
+    let b = 0;
+    let next = first(1);
+    for (let a = 0; a <= 32768; a++) {
+      while (b < HIST_BINS && next <= a) next = ++b < HIST_BINS ? first(b + 1) : Infinity;
+      table[a] = b;
+    }
+    for (let a = Math.ceil(maxAbs / scale) + 1; a <= 32768; a++) table[a] = HIST_BINS + 1;
+    this.binTable = table;
+    return table;
+  }
+
+  /**
+   * Cumulative histogram of |value| over the given rows: cum[b] is exactly the
+   * number of connexels that buildConnexels() keeps for these glyph nodes (all
+   * targets, no upper threshold) at the threshold b / HIST_BINS * maxAbs, i.e.
+   * the off-diagonal entries with |raw| >= max(1, floor(threshold / scale)).
+   * Used for the percentile slider and for fitting the connexel count to the
+   * GPU budget.
    */
   cumulativeHistogram(rows: Uint8Array | null, sign: SignMode, lo = 0, hi = this.n): Float64Array {
     const { n, data } = this;
-    const hist = new Float64Array(HIST_BINS + 1);
-    const k = HIST_BINS / 32768;
+    const bin = this.bins();
+    const hist = new Float64Array(HIST_BINS + 2);
     for (let i = lo; i < hi; i++) {
       if (rows && !rows[i]) continue;
       const o = i * n;
@@ -63,15 +93,15 @@ export class ConnMatrix {
         if (v === 0 || j === i) continue;
         if (v > 0) {
           if (sign === 1) continue;
-          hist[(v * k) | 0]++;
+          hist[bin[v]]++;
         } else {
           if (sign === 0) continue;
-          hist[(-v * k) | 0]++;
+          hist[bin[-v]]++;
         }
       }
     }
     for (let b = HIST_BINS - 1; b >= 0; b--) hist[b] += hist[b + 1];
-    return hist;
+    return hist.subarray(0, HIST_BINS + 1);
   }
 
   // ------------------------------------------------------------ constructors
@@ -167,7 +197,12 @@ export class ConnMatrix {
 /** 0 = positive only, 1 = negative only, 2 = both (brainGL's "+", "-", "+/-"). */
 export type SignMode = 0 | 1 | 2;
 
-/** Smallest |value| threshold whose supra-threshold count fits the budget. */
+/**
+ * Smallest threshold on the histogram grid (b / HIST_BINS * maxAbs, b >= 1) at
+ * which buildConnexels() keeps no more than `budget` connexels; maxAbs when
+ * even the highest bin holds more. `cum` must come from cumulativeHistogram()
+ * of the matrix whose maxAbs is passed.
+ */
 export function thresholdForBudget(cum: Float64Array, maxAbs: number, budget: number): number {
   for (let b = 1; b <= HIST_BINS; b++) {
     if (cum[b] <= budget) return (b / HIST_BINS) * maxAbs;
@@ -175,17 +210,28 @@ export function thresholdForBudget(cum: Float64Array, maxAbs: number, budget: nu
   return maxAbs;
 }
 
-/** Fraction of connexels with |value| >= t (brainGL's percFromThresh). */
-export function fractionAbove(cum: Float64Array, maxAbs: number, t: number): number {
-  const b = Math.min(HIST_BINS, Math.max(0, Math.floor((t / maxAbs) * HIST_BINS)));
-  return cum[0] > 0 ? cum[b] / cum[0] : 0;
+/** Histogram bin of a threshold; a threshold on the grid maps to its own bin whatever the rounding of t / maxAbs. */
+function binOfThreshold(maxAbs: number, t: number): number {
+  return Math.min(HIST_BINS, Math.max(0, Math.floor((t / maxAbs) * HIST_BINS + 1e-9)));
 }
 
-/** Threshold such that the given fraction of connexels lies above it (brainGL's threshFromPerc). */
+/** Fraction of connexels with |value| >= t (brainGL's percFromThresh). */
+export function fractionAbove(cum: Float64Array, maxAbs: number, t: number): number {
+  return cum[0] > 0 ? cum[binOfThreshold(maxAbs, t)] / cum[0] : 0;
+}
+
+/**
+ * Lowest threshold on the histogram grid above which no more than the given
+ * fraction of connexels lies (brainGL's threshFromPerc). Fed with
+ * fractionAbove(t) it returns the bin of t, or the first bin with the same
+ * count when the histogram is flat there.
+ */
 export function thresholdForFraction(cum: Float64Array, maxAbs: number, fraction: number): number {
+  // fraction * cum[0] can land a few ulp below the integer count it was derived from
   const target = fraction * cum[0];
+  const limit = target + 1e-12 * Math.max(1, target);
   for (let b = 0; b <= HIST_BINS; b++) {
-    if (cum[b] <= target) return (b / HIST_BINS) * maxAbs;
+    if (cum[b] <= limit) return (b / HIST_BINS) * maxAbs;
   }
   return maxAbs;
 }

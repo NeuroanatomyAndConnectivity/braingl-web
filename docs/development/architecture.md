@@ -10,7 +10,8 @@ src/
   directionalityWorkspace.ts  lazy entry to the vendored Directionality app
   glyphs/                   the Connectivity glyphs workspace
     glyphApp.ts               GlyphApp: state, events, panel, pipeline control, export hooks
-    params.ts                 GlyphParams and defaults (the parameter keys)
+    params.ts                 GlyphParams and defaults (the parameter keys), `valueUnit` (scale of thresholds for
+                              non-correlation matrices), `lengthSurfaceIndex` (-1 = displayed surface)
     builders.ts               CPU side: connexel buffers, pie sort and ranks, diff records,
                               "make connections", mean connectivity
     picking.ts                ray-triangle picking, brush growth, mean edge length
@@ -29,7 +30,8 @@ src/
     gl.ts                     Program wrapper (cached uniform lookup), data textures, buffers
     camera.ts                 orthographic quaternion trackball in millimetres
   data/                     data model and loading
-    dataset.ts                GlyphDataset, mesh topology, normals, winding, sphere detection
+    dataset.ts                GlyphDataset, mesh topology, normals, winding, sphere detection, `validateDataset`
+                              (structural checks that every loader runs before data reach the GPU)
     connMatrix.ts             ConnMatrix (dense int16), histogram, budget threshold
     loadWeb.ts                web glyphset manifest and binaries
     loadFiles.ts              file-drop dispatch: web / brainGL / loose files
@@ -42,11 +44,14 @@ src/
   export/                   Blender export
     bake.ts                   CPU mirror of the shaders: glyphs as coloured geometry
     directionalityBake.ts     Directionality scene as geometry
-    sceneFromDataset.ts       GlyphParams to GlyphBakeInput without a UI (CLI and tests)
-    blenderBundle.ts          scene.json and zip assembly
+    sceneFromDataset.ts       GlyphParams to GlyphBakeInput without a UI (CLI and tests); applies the same
+                              defaults, budget and thresholds as GlyphApp
+    blenderBundle.ts          scene.json and zip assembly; `defaultSceneCamera` (left-lateral view framing all
+                              layers, used for Directionality scenes)
     ply.ts                    binary PLY writer, stored-zip writer, CRC-32
   bridge/toDirectionality.ts  painted regions or surface map to .ply/.labels/.labelorder text
-  ui/panel.ts               declarative side panel (sliders, selects, buttons, collapsible sections)
+  ui/panel.ts               declarative side panel (sliders, selects, buttons, collapsible sections); slider
+                            limits and steps can be functions of the loaded data (`niceStep`, `stepDigits`)
   directionality/           VENDORED upstream app (LGPL-3.0-or-later); see Vendored Directionality
     app.ts  gfx/  io/  algorithms/  shaders/  ui/  directionality.css  LICENSE*  NOTICE.md  VENDORED.md
 tools/
@@ -58,7 +63,7 @@ public/
   directionality/           bundled Directionality datasets
   blender/import_braingl.py the Blender import script (also copied into every bundle)
 docs/                       this site (MkDocs Material)
-tests/                      end-to-end and other tests
+tests/                      end-to-end (`e2e/`), Python (`python/`) and Blender (`blender/`) tests
 ```
 
 Test files sit next to the code they test as `*.test.ts` (see [Testing](testing.md)).
@@ -70,7 +75,7 @@ Test files sit next to the code they test as `*.test.ts` (see [Testing](testing.
    a `.glyphset` (`io/glyphsetFiles.ts`, `io/freesurferAsc.ts`) and loose files (`io/gifti.ts`,
    `io/npy.ts`, `io/freesurferBinary.ts`). The result is a `GlyphDataset`: node count, triangles,
    surfaces with identical numbering, overlays, a mask and a `ConnMatrix`.
-2. **Dataset set-up.** `GlyphApp.setDataset(ds, roi, minThreshold, maxThreshold, targets)` (the last three come from a `.glyphset` file) builds the mesh topology (adjacency and unique edges),
+2. **Dataset set-up.** Each loader ends in `validateDataset`. `GlyphApp.setDataset(ds, roi, minThreshold, maxThreshold, targets)` (the last three come from a `.glyphset` file) builds the mesh topology (adjacency and unique edges),
    finds the sphere, derives default surfaces, glyph scale and threshold, and calls
    `GlyphRenderer.setDataset`, which uploads each surface as a position texture and its normals. Settings and camera views are remembered per dataset signature (node count and surface names; `localStorage` key `braingl.glyphs.dataset`).
 3. **Glyph build** (`ensureGlyphs`, lazily, on the next frame). When the glyph nodes, hemisphere, sign or
@@ -83,7 +88,7 @@ Test files sit next to the code they test as `*.test.ts` (see [Testing](testing.
    transparent surface, cursor; once for the main view and once for the inset.
 6. **Interaction.** Pointer events go through `bindEvents`; `pickAt` casts a ray with `Camera.ray` and
    `pickNode`; `selectNode` writes the seed row to a vertex attribute buffer; `paintAt` edits the label array.
-7. **Export.** `exportState()` snapshots the state; `bakeGlyphScene` produces layers; `buildBundleZip` packs them.
+7. **Export.** `exportState()` snapshots the state (including the build threshold, the budget and the target mask, which the baker needs to select the same primitives as the screen); `bakeGlyphScene` produces layers; `buildBundleZip` packs them. `sceneFromDataset` builds the same snapshot without a UI.
 
 ## URL parameters and deployment
 

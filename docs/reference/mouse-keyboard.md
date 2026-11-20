@@ -31,10 +31,11 @@ Evaluated in this order for a pointer press (`pointerdown`):
 | Gesture | Action |
 |---|---|
 | Right button (`button 2`), no modifier | Select node (Seed), in any tool. Dragging keeps selecting. |
-| `Ctrl` + right button | Paint (brainGL: ctrl + right-drag). |
-| `Ctrl` + `Shift` + right button | Erase (brainGL: ctrl + shift). |
-| `Ctrl` + left button | Select node. A `Ctrl`-click on macOS is reported with the left button, so it is treated like a right-click. |
-| `Alt` + `Ctrl` + left button, or `Alt` + right button | Paint; with `Shift`, erase. |
+| `Alt` (`Option` on macOS) + right button | Paint; with `Shift`, erase. Works on every system, and is the way to paint with a modifier on macOS. |
+| Systems other than macOS: `Ctrl` + right button | Paint (brainGL: ctrl + right-drag); with `Shift`, erase (brainGL: ctrl + shift). |
+| `Ctrl` + left button | Select node. On macOS a `Ctrl`-click is the system's secondary click (browsers report it with the left or the right button) and always selects a node; it never paints, which is why painting with a modifier uses `Option` there. |
+| `Alt` + `Ctrl` + left button | Paint; with `Shift`, erase. |
+| Paint tool, plain left-drag | Paint on every system; with `Shift`, erase. |
 | Middle button | Pan. |
 | `Shift` + left button in Navigate | Pan. |
 | Left button in Seed, Paint or Erase | The tool's action (`Shift` in Paint erases). |

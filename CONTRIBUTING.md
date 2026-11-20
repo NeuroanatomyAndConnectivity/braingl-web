@@ -1,7 +1,9 @@
 # Contributing to brainGL web
 
-Thank you for considering a contribution. This project is a browser port of the connectivity glyphs of brainGL; bug
-reports, data-format reports, documentation fixes and code are all welcome.
+Thank you for considering a contribution. This project is a browser port of the connectivity glyphs of brainGL (by
+Ralph Schurade, with the glyph and bundling code by Joachim Böttger), refactored for the web browser by Daniel S.
+Margulies using Claude. Bug reports, data-format reports, documentation fixes and code are all welcome. The repository is
+<https://github.com/NeuroanatomyAndConnectivity/braingl-web>.
 
 ## Set up
 

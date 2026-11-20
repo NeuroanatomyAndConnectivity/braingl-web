@@ -1,20 +1,25 @@
 # Quick start
 
 **Goal:** get to know the app in about five minutes, with the bundled demo data.
-**You need:** the app running ([Installation](installation.md)) or the address of a deployed copy.
+**You need:** a browser with WebGL2 and either the hosted app at
+<https://neuroanatomyandconnectivity.github.io/braingl-web/> or your own copy ([Installation](installation.md)).
 **Result:** you can move around the brain, select a node, change the glyph style and the
 threshold, and save a picture.
 
 ## 1. Open the app
 
-Open <http://localhost:5173> (or the address of your copy). The demo glyphset loads by itself.
+Open <https://neuroanatomyandconnectivity.github.io/braingl-web/>, or <http://localhost:5173>
+if you run your own copy. The demo glyphset (about 13.5 MB) loads by itself; a progress box
+shows the download.
 
 ![The app after loading: left lateral view of the inflated surface with point glyphs, the second view at the bottom left, the side panel on the right](../images/quickstart-first-view.png)
 
 What you see:
 
-- **Top bar**: the two workspace tabs (*Connectivity glyphs* and *Directionality*), a link to
-  the 2014 paper, **Export for Blender**, and the ☰ button that hides or shows the side panel.
+- **Top bar**: the two workspace tabs (*Connectivity glyphs* and *Directionality*), a **Docs**
+  link to this documentation (in a built copy such as the hosted app; the development server
+  does not show it), a link to the 2014 paper, **Export for Blender**, and the ☰ button that
+  hides or shows the side panel.
 - **Main view**: the inflated cortical surface with one glyph at every node. With the default
   style *points*, every glyph is a tiny map of the brain: one coloured point for every
   connection of that node that is stronger than the threshold.
@@ -27,7 +32,9 @@ What you see:
 - **Side panel**: all settings, in sections that fold when you click their heading.
 
 The demo is the group-average resting-state functional connectivity of 40 participants of the
-enhanced NKI Rockland sample on the FreeSurfer fsaverage4 mesh: 5,124 nodes on both hemispheres.
+enhanced NKI Rockland sample (Nooner et al. 2012,
+[doi:10.3389/fnins.2012.00152](https://doi.org/10.3389/fnins.2012.00152)) on the FreeSurfer
+fsaverage4 mesh: 5,124 nodes on both hemispheres.
 
 ## 2. Move around
 
@@ -42,8 +49,9 @@ The second view has its own camera: drag and scroll inside it to move it.
 
 ## 3. Select a node
 
-Right-click anywhere on the surface (on a Mac trackpad: Ctrl + click, or double-click). You can
-also choose the **Seed** tool (key ++s++) and click or drag with the left button.
+Right-click anywhere on the surface. On a Mac trackpad, click with two fingers or hold
+++ctrl++ and click; a double-click also works everywhere. You can also choose the **Seed** tool
+(key ++s++) and click or drag with the left button.
 
 ![A node in the parietal cortex is selected; the second view shows its connectivity map](../images/quickstart-seed.png)
 
@@ -90,5 +98,9 @@ section reloads the demo data after you have opened something else.
 ## Next steps
 
 - [Connectivity glyphs tutorial](../tutorials/glyphs.md): the glyph styles and what they show.
+- [Manual parcellation](../tutorials/parcellation.md) and
+  [Connections and bundling](../tutorials/bundling.md): regions, lines and bundles.
 - [Your own data](../tutorials/own-data.md): open your surfaces and matrices.
+- [Directionality](../tutorials/directionality.md) and [Blender export](../tutorials/blender.md):
+  the second workspace and rendered figures.
 - [Mouse and keyboard](../reference/mouse-keyboard.md): every gesture and key.

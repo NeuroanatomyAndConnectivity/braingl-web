@@ -17,27 +17,61 @@ Use it in one of three ways:
 Options (after the `--`):
     --render FILE      render a still image to FILE and (with --background) quit
     --save FILE        save the result as a .blend file
-    --cycles           render with Cycles instead of EEVEE
+    --engine NAME      eevee (default) | cycles
     --samples N        render samples (default 64)
     --resolution W     width of the render in pixels (default 1920)
     --points MODE      nodes | mesh: draw point glyphs as a geometry-nodes point
                        cloud (light, default) or as real octahedra (portable)
     --keep             keep the objects that are already in the .blend file
 
-Works with Blender 3.6 LTS and newer (tested with 4.x and 5.0). Units are
+`--cycles` is still understood as `--engine cycles` where that is possible
+(with the stand-alone `bpy` Python module). The Blender application itself
+rejects it: its Cycles add-on reads the arguments after `--` too and takes
+`--cycles` for an ambiguous abbreviation of its own `--cycles-device` /
+`--cycles-print-stats`. Use `--engine cycles`.
+
+Works with Blender 3.6 LTS and newer (tested with 5.0). Units are
 millimetres; data colours are stored in the "Col" colour attribute of every
 object. Layers marked "flat" use an emission material so that lighting does
 not change the colours that encode data; "lit" layers (anatomy) are shaded.
+A scene.json without a camera gets a left-lateral orthographic camera that
+frames everything for the 16:9 render.
 """
 import json
 import os
 import sys
+
+
+def _rename_cycles_option(argv):
+    """Replace our old `--cycles` flag after the `--` by `--engine cycles`, in place.
+
+    Blender's Cycles add-on parses everything after `--` itself when it is registered
+    (scripts/addons_core/cycles/engine.py, _parse_command_line) with an argparse parser
+    that knows --cycles-device and --cycles-print-stats and accepts abbreviations: a bare
+    `--cycles` makes it stop with "ambiguous option". With the bpy module the add-on is
+    registered by `import bpy`, so the flag has to be gone before that import. (In the
+    Blender application the add-on is registered before any script runs.)"""
+    if "--" not in argv:
+        return
+    start = argv.index("--") + 1
+    renamed = []
+    for arg in argv[start:]:
+        renamed.extend(["--engine", "cycles"] if arg == "--cycles" else [arg])
+    argv[start:] = renamed
+
+
+if __name__ == "__main__":
+    _rename_cycles_option(sys.argv)
 
 import bpy
 import numpy as np
 from mathutils import Quaternion, Vector
 
 COLOR_ATTRIBUTE = "Col"
+#: custom property that marks every datablock made by this script (so that a re-import can tidy up)
+TAG = "braingl"
+#: width / height of the render when scene.json has no camera
+DEFAULT_ASPECT = 16 / 9
 
 
 # ----------------------------------------------------------------------- PLY
@@ -125,23 +159,34 @@ def make_mesh(name, xyz, rgba, faces, smooth=False):
         except Exception:
             pass
         mesh.loops.foreach_set("vertex_index", np.ascontiguousarray(faces, np.int32).ravel())
-        if smooth:
-            mesh.polygons.foreach_set("use_smooth", np.ones(nf, bool))
+        # always written: the faces of a new mesh are flat up to Blender 4.0 and smooth from 4.1 on
+        mesh.polygons.foreach_set("use_smooth", np.full(nf, bool(smooth)))
     lin = np.ones((nv, 4), np.float32)
     lin[:, :3] = srgb_to_linear(rgba[:, :3])
     lin[:, 3] = rgba[:, 3] / 255.0
     attr = mesh.color_attributes.new(COLOR_ATTRIBUTE, "FLOAT_COLOR", "POINT")
     attr.data.foreach_set("color", lin.ravel())
+    mesh[TAG] = True
     mesh.update()
     mesh.validate()
     return mesh
 
 
 # ----------------------------------------------------------------- materials
+def enable_nodes(block):
+    """Give a material or world a node tree. Since Blender 5.0 they always have one and
+    `use_nodes` is deprecated (it warns, and goes away in 6.0)."""
+    if bpy.app.version < (5, 0, 0):
+        block.use_nodes = True
+    elif block.node_tree is None and hasattr(block, "use_nodes"):  # not expected; kept as a safety net
+        block.use_nodes = True
+    return block.node_tree
+
+
 def make_material(name, shading, opacity=1.0):
     mat = bpy.data.materials.new(name)
-    mat.use_nodes = True
-    nt = mat.node_tree
+    mat[TAG] = True
+    nt = enable_nodes(mat)
     nt.nodes.clear()
     out = nt.nodes.new("ShaderNodeOutputMaterial")
     out.location = (400, 0)
@@ -157,12 +202,12 @@ def make_material(name, shading, opacity=1.0):
         nt.links.new(attr.outputs["Color"], sh.inputs["Base Color"])
         sh.inputs["Roughness"].default_value = 0.65
         if opacity < 0.999:
+            # see-through anatomy (e.g. bundles inside the surface): alpha blending in EEVEE, native in Cycles
             sh.inputs["Alpha"].default_value = opacity
-            for prop, value in (("surface_render_method", "BLENDED"), ("blend_method", "BLEND")):
-                try:
-                    setattr(mat, prop, value)
-                except Exception:
-                    pass
+            if hasattr(mat, "surface_render_method"):  # Blender 4.2+
+                mat.surface_render_method = "BLENDED"
+            else:
+                mat.blend_method = "BLEND"
         nt.links.new(sh.outputs["BSDF"], out.inputs["Surface"])
     sh.location = (0, 0)
     return mat
@@ -171,6 +216,7 @@ def make_material(name, shading, opacity=1.0):
 def point_cloud_modifier(obj, radius, material):
     """Geometry nodes: mesh vertices -> renderable point cloud with a radius and a material."""
     ng = bpy.data.node_groups.new("brainGL points", "GeometryNodeTree")
+    ng[TAG] = True
     if hasattr(ng, "interface"):  # Blender 4.0+
         ng.interface.new_socket(name="Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
         ng.interface.new_socket(name="Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
@@ -193,6 +239,51 @@ def point_cloud_modifier(obj, radius, material):
 
 
 # --------------------------------------------------------------------- scene
+def remove_previous_import():
+    """Take away what an earlier run of this script left in the file: its collections once they are
+    empty, and its meshes, materials, node groups, cameras and lights that nothing uses any more."""
+    for coll in list(bpy.data.collections):
+        if coll.get(TAG) and not coll.all_objects and not coll.children:
+            bpy.data.collections.remove(coll)
+    for blocks in (bpy.data.meshes, bpy.data.cameras, bpy.data.lights, bpy.data.node_groups, bpy.data.materials):
+        for block in list(blocks):
+            if block.get(TAG) and block.users == 0:
+                blocks.remove(block)
+
+
+def set_background(world, rgb):
+    """World colour = the exported background (sRGB 0..1), unlit by anything else."""
+    nt = enable_nodes(world)
+    out = next((n for n in nt.nodes if n.bl_idname == "ShaderNodeOutputWorld" and n.is_active_output), None)
+    out = out or next((n for n in nt.nodes if n.bl_idname == "ShaderNodeOutputWorld"), None) or nt.nodes.new("ShaderNodeOutputWorld")
+    bg = next((l.from_node for l in nt.links if l.to_node == out and l.to_socket.name == "Surface"
+               and l.from_node.bl_idname == "ShaderNodeBackground"), None)
+    if bg is None:
+        bg = nt.nodes.new("ShaderNodeBackground")
+        bg.location = (out.location[0] - 220, out.location[1])
+        nt.links.new(bg.outputs["Background"], out.inputs["Surface"])
+    for link in list(bg.inputs["Color"].links):
+        nt.links.remove(link)
+    lin = srgb_to_linear(np.asarray(rgb, np.float32) * 255.0)
+    bg.inputs["Color"].default_value = (float(lin[0]), float(lin[1]), float(lin[2]), 1.0)
+    bg.inputs["Strength"].default_value = 1.0
+
+
+def frame_left_lateral(lo, hi, aspect, margin=1.06):
+    """Left-lateral orthographic view (looking along +x, +z up) of the box lo..hi.
+
+    Returns (location, rotation quaternion, ortho_scale). Blender's ortho_scale is the size of
+    the LARGER image side, so the visible width is ortho_scale * min(1, aspect) and the visible
+    height ortho_scale / max(1, aspect); the box has to fit into both."""
+    center, size = (lo + hi) / 2, hi - lo
+    width, height = float(size[1]), float(size[2])     # the image shows y horizontally and z vertically
+    half_height = margin * max(height / 2, width / (2 * aspect))
+    distance = float(np.linalg.norm(size)) * 2 + 100.0
+    location = (float(lo[0]) - distance, float(center[1]), float(center[2]))
+    # local -Z -> +x (view direction), local +Y -> +z (up)
+    return location, (0.5, 0.5, -0.5, -0.5), max(2 * half_height * max(1.0, aspect), 1e-3)
+
+
 def import_scene(scene_dir, points_mode="nodes", keep=False):
     if os.path.isfile(scene_dir):
         scene_dir = os.path.dirname(os.path.abspath(scene_dir))
@@ -204,8 +295,10 @@ def import_scene(scene_dir, points_mode="nodes", keep=False):
     if not keep:
         for obj in list(scene.objects):
             bpy.data.objects.remove(obj, do_unlink=True)
+        remove_previous_import()
 
     coll = bpy.data.collections.new("brainGL: " + spec.get("title", "scene"))
+    coll[TAG] = True
     scene.collection.children.link(coll)
     lo, hi = np.full(3, np.inf), np.full(3, -np.inf)
     objects = []
@@ -213,10 +306,12 @@ def import_scene(scene_dir, points_mode="nodes", keep=False):
         xyz, rgba, faces, edges = read_ply(os.path.join(scene_dir, layer["file"]))
         if len(xyz) == 0:
             continue
-        lo, hi = np.minimum(lo, xyz.min(axis=0)), np.maximum(hi, xyz.max(axis=0))
-        mat = make_material("brainGL " + layer["name"], layer.get("shading", "lit"), float(layer.get("opacity", 1.0)))
+        shading = layer.get("shading", "lit")
+        mat = make_material("brainGL " + layer["name"], shading, float(layer.get("opacity", 1.0)))
         radius = float(layer.get("radius") or 0.25)
         kind = layer["kind"]
+        smooth = bool(layer.get("smooth", False))
+        lo, hi = np.minimum(lo, xyz.min(axis=0)), np.maximum(hi, xyz.max(axis=0))
         as_cloud = False
         if kind == "segments":
             xyz, rgba, faces = expand_segments(xyz, rgba, edges, radius)
@@ -225,7 +320,7 @@ def import_scene(scene_dir, points_mode="nodes", keep=False):
                 as_cloud = True
             else:
                 xyz, rgba, faces = expand_points(xyz, rgba, radius)
-        mesh = make_mesh(layer["name"], xyz, rgba, faces if not as_cloud else np.zeros((0, 3), np.int32), smooth=layer.get("smooth", False))
+        mesh = make_mesh(layer["name"], xyz, rgba, faces if not as_cloud else np.zeros((0, 3), np.int32), smooth=smooth)
         obj = bpy.data.objects.new(layer["name"], mesh)
         coll.objects.link(obj)
         mesh.materials.append(mat)
@@ -240,6 +335,13 @@ def import_scene(scene_dir, points_mode="nodes", keep=False):
                 obj = bpy.data.objects.new(layer["name"], mesh)
                 coll.objects.link(obj)
                 mesh.materials.append(mat)
+        if shading == "flat":
+            # data colours: they neither light the anatomy (Cycles: emission is a light source) nor shade it
+            for prop in ("visible_diffuse", "visible_glossy", "visible_transmission", "visible_volume_scatter", "visible_shadow"):
+                try:
+                    setattr(obj, prop, False)
+                except Exception:
+                    pass
         obj["braingl_kind"] = kind
         objects.append(obj)
         note = " (subsampled on export)" if layer.get("truncated") else ""
@@ -255,38 +357,34 @@ def import_scene(scene_dir, points_mode="nodes", keep=False):
         pass
     world = scene.world or bpy.data.worlds.new("brainGL world")
     scene.world = world
-    world.use_nodes = True
-    bg = world.node_tree.nodes.get("Background")
-    if bg:
-        rgb = srgb_to_linear(np.array(spec.get("background", [0.06, 0.06, 0.08])) * 255.0)
-        bg.inputs["Color"].default_value = (float(rgb[0]), float(rgb[1]), float(rgb[2]), 1.0)
-        bg.inputs["Strength"].default_value = 1.0
+    set_background(world, spec.get("background", [0.06, 0.06, 0.08]))
 
     # camera: the browser view if it was exported, otherwise a left-lateral view of everything
-    center = (lo + hi) / 2 if np.all(np.isfinite(lo)) else np.zeros(3)
-    extent = float(np.max(hi - lo)) if np.all(np.isfinite(lo)) else 200.0
+    if not np.all(np.isfinite(lo)):
+        lo, hi = np.full(3, -100.0), np.full(3, 100.0)
     cam_data = bpy.data.cameras.new("brainGL camera")
+    cam_data[TAG] = True
     cam_data.type = "ORTHO"
     cam_data.clip_start, cam_data.clip_end = 0.1, 100000.0
     cam = bpy.data.objects.new("brainGL camera", cam_data)
     coll.objects.link(cam)
     cam.rotation_mode = "QUATERNION"
     c = spec.get("camera")
-    aspect = 16 / 9
+    aspect = DEFAULT_ASPECT
     if c:
         cam.location = Vector(c["location"])
         cam.rotation_quaternion = Quaternion(c["rotation_quaternion"])
         cam_data.ortho_scale = c["ortho_scale"]
         aspect = float(c.get("aspect", aspect))
     else:
-        # look along +x from the left, superior up: local -Z -> +x, local +Y -> +z
-        cam.rotation_quaternion = Quaternion((0.5, 0.5, -0.5, -0.5))
-        cam.location = Vector((float(center[0]) - extent * 3, float(center[1]), float(center[2])))
-        cam_data.ortho_scale = extent * 1.15
+        location, rotation, cam_data.ortho_scale = frame_left_lateral(lo, hi, aspect)
+        cam.location = Vector(location)
+        cam.rotation_quaternion = Quaternion(rotation)
     scene.camera = cam
 
     # a headlight that follows the camera, as in the browser
     sun_data = bpy.data.lights.new("brainGL headlight", "SUN")
+    sun_data[TAG] = True
     sun_data.energy = 3.0
     sun = bpy.data.objects.new("brainGL headlight", sun_data)
     coll.objects.link(sun)
@@ -304,7 +402,7 @@ def setup_render(aspect, width=1920, cycles=False, samples=64):
         scene.render.engine = "CYCLES"
         scene.cycles.samples = int(samples)
     else:
-        for engine in ("BLENDER_EEVEE_NEXT", "BLENDER_EEVEE"):
+        for engine in ("BLENDER_EEVEE_NEXT", "BLENDER_EEVEE"):  # 4.2 - 4.5 / every other version
             try:
                 scene.render.engine = engine
                 break
@@ -336,19 +434,23 @@ def main(argv=None):
     import argparse
 
     argv = sys.argv[sys.argv.index("--") + 1:] if argv is None and "--" in sys.argv else (argv or [])
-    ap = argparse.ArgumentParser(prog="import_braingl.py", description="Import a brainGL-web scene into Blender")
+    ap = argparse.ArgumentParser(prog="import_braingl.py", description="Import a brainGL-web scene into Blender", allow_abbrev=False)
     ap.add_argument("scene", nargs="?", default=None, help="folder that contains scene.json (default: next to this script)")
-    ap.add_argument("--render")
-    ap.add_argument("--save")
-    ap.add_argument("--cycles", action="store_true")
+    ap.add_argument("--render", metavar="FILE", help="render a still image")
+    ap.add_argument("--save", metavar="FILE", help="save a .blend file")
+    ap.add_argument("--engine", choices=["eevee", "cycles"], default="eevee", help="render engine (default: eevee)")
+    ap.add_argument("--cycles", action="store_true", help="same as --engine cycles (not accepted by the Blender application, see the top of the script)")
     ap.add_argument("--samples", type=int, default=64)
-    ap.add_argument("--resolution", type=int, default=1920)
+    ap.add_argument("--resolution", type=int, default=1920, metavar="W", help="image width in pixels")
     ap.add_argument("--points", choices=["nodes", "mesh"], default="nodes")
-    ap.add_argument("--keep", action="store_true")
+    ap.add_argument("--keep", action="store_true", help="keep the objects that are already in the file")
+    # Blender's own options for Cycles also come after the `--`; they are not ours to interpret
+    ap.add_argument("--cycles-device", help=argparse.SUPPRESS)
+    ap.add_argument("--cycles-print-stats", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
 
     spec, aspect, objects = import_scene(a.scene or default_scene_dir(), points_mode=a.points, keep=a.keep)
-    setup_render(aspect, a.resolution, a.cycles, a.samples)
+    setup_render(aspect, a.resolution, a.cycles or a.engine == "cycles", a.samples)
     print(f"brainGL: imported '{spec.get('title', '')}' with {len(objects)} layer(s)")
     if a.save:
         bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.save))

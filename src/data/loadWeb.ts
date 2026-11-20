@@ -8,6 +8,8 @@ export interface WebGlyphsetManifest {
   version: number;
   name: string;
   description?: string;
+  /** attribution of redistributed data (free text; not interpreted by the loader) */
+  credit?: string;
   nodes: number;
   leftNodes?: number;
   leftTriangles?: number;

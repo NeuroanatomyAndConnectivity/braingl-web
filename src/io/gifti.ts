@@ -49,6 +49,13 @@ const CTORS: Record<string, GiftiCtor> = {
   NIFTI_TYPE_FLOAT64: Float64Array,
 };
 
+/**
+ * Largest array (number of elements) that is accepted. A GIFTI header is free
+ * text, so the dimensions are checked against this cap and against the data
+ * actually present before anything of that size is allocated.
+ */
+export const GIFTI_MAX_ELEMENTS = 2 ** 28;
+
 const PLATFORM_LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 
 // ---------------------------------------------------------------------------
@@ -83,19 +90,52 @@ function decodeBase64(text: string, start: number, end: number): Uint8Array<Arra
   return out.subarray(0, o);
 }
 
-async function inflate(bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> {
+/**
+ * Inflate a zlib (or gzip) stream that should hold `expected` bytes. Memory
+ * follows what the stream really produces and never exceeds the declared
+ * size: output beyond `expected` is dropped, and a stream that keeps going
+ * past it is refused (so a small file cannot expand into gigabytes). The
+ * result is `expected` bytes long, or shorter when the stream ends early.
+ */
+async function inflate(bytes: Uint8Array<ArrayBuffer>, expected: number): Promise<Uint8Array<ArrayBuffer>> {
   if (typeof DecompressionStream === "undefined") {
     throw new Error("GIFTI: GZipBase64Binary needs DecompressionStream, which this runtime does not provide");
   }
   // GIFTI specifies a zlib stream; tolerate writers that emit a gzip member.
   const format = bytes.length > 1 && bytes[0] === 0x1f && bytes[1] === 0x8b ? "gzip" : "deflate";
+  const chunks: Uint8Array[] = [];
+  let got = 0; // bytes kept (at most `expected`)
+  let total = 0; // bytes the stream has produced so far
   try {
-    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream(format));
-    return new Uint8Array(await new Response(stream).arrayBuffer());
+    const reader = new Blob([bytes]).stream().pipeThrough(new DecompressionStream(format)).getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > expected + INFLATE_SLACK) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error(`the stream holds more than the ${expected} bytes that the dimensions declare`);
+      }
+      if (got < expected) {
+        const part = value.length <= expected - got ? value : value.subarray(0, expected - got);
+        chunks.push(part);
+        got += part.length;
+      }
+    }
   } catch (e) {
     throw new Error(`GIFTI: could not decompress GZipBase64Binary data (${e instanceof Error ? e.message : String(e)})`);
   }
+  const out = new Uint8Array(got);
+  let o = 0;
+  for (const c of chunks) {
+    out.set(c, o);
+    o += c.length;
+  }
+  return out;
 }
+
+/** Decompressed bytes tolerated beyond the declared size (padding written by some tools) before the stream is refused. */
+const INFLATE_SLACK = 1 << 16;
 
 function swapBytesInPlace(bytes: Uint8Array, size: number): void {
   for (let i = 0, n = bytes.length - size + 1; i < n; i += size) {
@@ -234,6 +274,11 @@ export async function parseGifti(input: ArrayBuffer | string): Promise<GiftiFile
     }
     let count = 1;
     for (const d of dims) count *= d;
+    if (!(count <= GIFTI_MAX_ELEMENTS)) {
+      throw new Error(
+        `GIFTI: DataArray ${index}: dims [${dims.join(", ")}] declare ${count} elements, more than the ${GIFTI_MAX_ELEMENTS} this reader accepts`,
+      );
+    }
 
     const encoding = attrs.Encoding ?? "";
     if (encoding === "ExternalFileBinary") {
@@ -262,6 +307,14 @@ export async function parseGifti(input: ArrayBuffer | string): Promise<GiftiFile
     const size = Ctor.BYTES_PER_ELEMENT;
     let data: GiftiData;
     if (encoding === "ASCII") {
+      // every value takes at least one character plus a separator: when the text cannot hold `count`
+      // values, count them without allocating an array of the declared size
+      if (count > (dataEnd - dataStart + 1) / 2) {
+        const present = parseAsciiNumbers(text, dataStart, dataEnd, new Ctor(0));
+        throw new Error(
+          `GIFTI: DataArray ${index}: dims [${dims.join(", ")}] need ${count} values but <Data> holds ${present}`,
+        );
+      }
       data = new Ctor(count);
       const got = parseAsciiNumbers(text, dataStart, dataEnd, data);
       if (got < count) {
@@ -273,7 +326,7 @@ export async function parseGifti(input: ArrayBuffer | string): Promise<GiftiFile
       let bytes = decodeBase64(text, dataStart, dataEnd);
       if (encoding === "GZipBase64Binary" && (count > 0 || bytes.length > 0)) {
         try {
-          bytes = await inflate(bytes);
+          bytes = await inflate(bytes, count * size);
         } catch (e) {
           throw new Error(`GIFTI: DataArray ${index}: ${e instanceof Error ? e.message.replace(/^GIFTI: /, "") : String(e)}`);
         }

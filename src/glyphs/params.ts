@@ -34,7 +34,7 @@ export interface GlyphParams {
   maxThreshold: number;
   sign: 0 | 1 | 2;
   minLength: number;
-  lengthSurface: number;
+  lengthSurface: number; // surface index, or -1 = the displayed surface (as in brainGL)
   budgetM: number;
   // colour map
   colormap: string;
@@ -115,3 +115,16 @@ export const defaultGlyphParams: GlyphParams = {
   bundleBell: 5,
   screenshotScale: 2,
 };
+
+/** Surface on which the minimum connection length is measured: `lengthSurface`, or the displayed one when it is -1. */
+export function lengthSurfaceIndex(p: Pick<GlyphParams, "surface" | "lengthSurface">): number {
+  return p.lengthSurface === -1 ? p.surface : p.lengthSurface;
+}
+
+/**
+ * Unit in which the value-dependent defaults (threshold, colour range) are expressed: 1 for
+ * correlations, the largest |value| for any other kind of matrix (weights, counts, small probabilities).
+ */
+export function valueUnit(maxAbs: number): number {
+  return maxAbs > 1.0001 || maxAbs < 0.5 ? maxAbs : 1;
+}

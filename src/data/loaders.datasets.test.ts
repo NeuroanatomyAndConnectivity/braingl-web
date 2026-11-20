@@ -8,7 +8,7 @@ import { loadFromFiles } from "./loadFiles";
 import { isWebManifest, loadWebGlyphset, WebGlyphsetManifest } from "./loadWeb";
 import { directed, FixtureDataset, FIXTURES, icoBrain, singleHemisphere, withMedialWall } from "../testing/fixtures";
 import {
-  hemiSplit, LooseOptions, setOffset, storedValues, toBrainGLFiles, toLooseFiles, toWebGlyphsetFiles, WebDtype, WebLayout, webScale, without, writeNpy,
+  hemiSplit, LooseOptions, setOffset, storedValues, toBrainGLFiles, toLooseFiles, toWebGlyphsetFiles, WebDtype, WebLayout, webScale, without, writeFreeSurferCurv, writeNpy,
 } from "../testing/serialise";
 import { canonicalTriangles, signedVolume6 } from "../testing/reference";
 
@@ -274,21 +274,69 @@ describe.each(FIXTURES)("loose files of $name", ({ make }) => {
 });
 
 describe("loose FreeSurfer curvature files", () => {
-  // BUG (src/data/loadFiles.ts, loose-file branch): the file type is sniffed from `f.slice(0, 3)`, but
-  // isFreeSurferCurv() needs the 15-byte header and returns false for anything shorter. A binary lh.sulc /
-  // lh.curv is therefore never recognised as an overlay; it is silently treated as a matrix candidate.
-  it.fails("lh.sulc + rh.sulc become a 'sulc' overlay", async () => {
-    const ds = icoBrain(1);
-    const { dataset } = await loadFromFiles(toLooseFiles(ds, { surfaces: "freesurfer", matrix: "npy-f4", overlays: "curv" }));
+  // The file type used to be sniffed from the first 3 bytes, but isFreeSurferCurv() needs the 15-byte header (and
+  // the size of the file), so a binary lh.sulc / lh.curv was never recognised and became a matrix candidate.
+  const ds = icoBrain(1);
+  const curvFiles = (name: string): File[] => {
+    const { nodes, triangles } = hemiSplit(ds);
+    return [
+      new File([writeFreeSurferCurv(ds.overlays[0].data.slice(0, nodes), triangles)], `lh.${name}`),
+      new File([writeFreeSurferCurv(ds.overlays[0].data.slice(nodes), ds.triangles.length / 3 - triangles)], `rh.${name}`),
+    ];
+  };
+
+  it.each<LooseOptions["matrix"]>(["npy-f4", "raw"])("lh.sulc + rh.sulc become a 'sulc' overlay (matrix as %s)", async (matrix) => {
+    const { dataset, notes } = await loadFromFiles(toLooseFiles(ds, { surfaces: "freesurfer", matrix, overlays: "curv" }));
     expect(dataset.overlays.map((v) => v.name)).toEqual(["sulc"]);
     expect(maxDiff(dataset.overlays[0].data, ds.overlays[0].data)).toBe(0);
-  });
-
-  it("a curvature file at least does not break loading", async () => {
-    const ds = icoBrain(1);
-    const { dataset } = await loadFromFiles(toLooseFiles(ds, { surfaces: "freesurfer", matrix: "npy-f4", overlays: "curv" }));
+    expect(notes).toEqual([]);
     expectSameMesh(dataset, ds, { positionTolerance: 0 });
     expect(maxDiff(dataset.conn.data, ds.conn.data)).toBe(0);
+  });
+
+  it("several curvature files give one overlay each, whatever the order of the files", async () => {
+    const files = [...curvFiles("curv"), ...toLooseFiles(ds, { surfaces: "gifti", matrix: "npy-f4", overlays: "curv" }), ...curvFiles("thickness")].reverse();
+    const { dataset } = await loadFromFiles(files);
+    expect(dataset.overlays.map((v) => v.name).sort()).toEqual(["curv", "sulc", "thickness"]);
+    for (const v of dataset.overlays) expect(maxDiff(v.data, ds.overlays[0].data)).toBe(0);
+    expect(maxDiff(dataset.conn.data, ds.conn.data)).toBe(0);
+  });
+
+  it("a curvature file is never taken for the connectivity matrix", async () => {
+    // no matrix among the files: the curvature files are the largest files of unknown type
+    const files = without(toLooseFiles(ds, { surfaces: "asc", matrix: "npy-f4", overlays: "curv" }), "connectivity.npy");
+    await expect(loadFromFiles(files)).rejects.toThrow(/No connectivity matrix found/);
+    // a matrix without a telling extension that is smaller than the curvature files still wins
+    const tiny = singleHemisphere(0);
+    const big = new Float32Array(4000).fill(0.5);
+    const loose = [
+      ...toLooseFiles(tiny, { surfaces: "freesurfer", matrix: "raw" }).map((f) => (f.name === "connectivity.bin" ? new File([f], "connectivity") : f)),
+      new File([writeFreeSurferCurv(big, 20)], "lh.sulc"),
+    ];
+    expect(loose.find((f) => f.name === "lh.sulc")!.size).toBeGreaterThan(loose.find((f) => f.name === "connectivity")!.size);
+    const { dataset } = await loadFromFiles(loose);
+    expect(dataset.n).toBe(tiny.n);
+    expect(maxDiff(dataset.conn.data, tiny.conn.data)).toBe(0);
+    expect(dataset.overlays).toEqual([]); // 4000 values do not fit 12 nodes
+  });
+
+  it("a truncated curvature file is skipped with a note instead of being read as a matrix", async () => {
+    const files = toLooseFiles(ds, { surfaces: "freesurfer", matrix: "raw", overlays: "curv" }).map((f) =>
+      f.name === "lh.sulc" ? new File([f.slice(0, f.size - 40)], f.name) : f.name === "connectivity.bin" ? new File([f], "connectivity") : f);
+    const { dataset, notes } = await loadFromFiles(files);
+    expect(notes.join("\n")).toMatch(/skipped "lh\.sulc"/);
+    expect(dataset.overlays).toEqual([]); // the right half alone does not cover the mesh
+    expect(maxDiff(dataset.conn.data, ds.conn.data)).toBe(0);
+  });
+
+  it("a raw matrix that happens to start with FF FF FF is still a matrix", async () => {
+    const tiny = singleHemisphere(0);
+    const values = Float32Array.from(tiny.values);
+    new Uint8Array(values.buffer).set([0xff, 0xff, 0xff, 0x3e]); // 0.49999997 on the diagonal
+    const files = toLooseFiles(tiny, { surfaces: "freesurfer", matrix: "raw" }).map((f) => (f.name === "connectivity.bin" ? new File([values], "connectivity") : f));
+    const { dataset } = await loadFromFiles(files);
+    expect(dataset.conn.get(0, 0)).toBeCloseTo(0.5, 4);
+    expect(dataset.conn.get(0, 1)).toBeCloseTo(tiny.values[1], 4);
   });
 });
 

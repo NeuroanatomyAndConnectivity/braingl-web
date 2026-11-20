@@ -510,7 +510,6 @@ async function run(opts) {
       return `visible in ${rec.visible} of ${rec.withMessage} samples`;
     }, {
       needs: [C1],
-      knownBug: "GlyphApp.progress() shows the box with style.display = \"\", which falls back to the stylesheet rule `.hud-progress { display: none }` (index.html), so load and bundling progress is never shown",
     });
 
     // ------------------------------------------------- 2. glyph styles draw
@@ -546,7 +545,6 @@ async function run(opts) {
           return `${st.coloured} coloured px at threshold ${threshold}`;
         }, {
           needs: [C1],
-          knownBug: "with the default threshold (0.5) the diffpoints style draws no glyph at all on the demo data and the status line gives no hint; glyphs only appear once the threshold is lowered to about 0.3 or less",
         });
       }
       const name = `2. glyph style ${s.label ?? s.key} draws coloured glyphs`;

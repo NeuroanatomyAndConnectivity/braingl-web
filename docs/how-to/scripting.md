@@ -12,7 +12,8 @@ The app exposes a small API as `window.braingl`. Use it from the browser's devel
 | `braingl.glyphs.focusNode(i, zoom)` | centre the main view on node `i` |
 | `braingl.glyphs.screenshot()` | download a PNG, as the **Screenshot** button |
 | `braingl.show("glyphs")`, `braingl.show("directionality")` | switch workspace |
-| `braingl.exportForBlender()` | as the **Export for Blender** button |
+| `braingl.exportForBlender()` | as the **Export for Blender** button, for the workspace in front |
+| `braingl.glyphs.loadDemo("data/local/my_set/")` | load a web glyphset hosted next to the app (a folder with `glyphset.json`, relative to the page) |
 
 ## Example: one image per glyph style
 
@@ -50,5 +51,11 @@ The browser may ask once whether the page may download several files. The result
 - Settings changed by script are stored like those changed in the panel; **Export → Reset to
   defaults** restores the defaults.
 - Painting, "Make connections" and bundling have no public scripting calls yet.
+- Painting with the mouse depends on the platform: Option + right-drag on macOS, Ctrl +
+  right-drag elsewhere, or the **Paint** tool everywhere
+  ([Mouse and keyboard](../reference/mouse-keyboard.md)).
+- The address parameters `?data=<folder>` and `?workspace=directionality` set the starting
+  state without the console; `?data=` accepts only folders on the same origin as the app
+  ([Deploy your own copy](deploy.md)).
 - For batch export to Blender without a browser use `npm run export:blender`
   ([Command-line tools](../reference/cli.md)).

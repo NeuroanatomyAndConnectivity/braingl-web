@@ -18,6 +18,20 @@ export interface DirectionalityInput {
   labels: string;
   order: string;
   regions: number;
+  /**
+   * Whether at least two regions share a border (a triangle with vertices in two regions). The
+   * direction field is derived at such borders only, so without one there is nothing to show.
+   */
+  touching: boolean;
+}
+
+/** True if some triangle has vertices in two different regions (label 0 = no region). */
+export function regionsTouch(labels: ArrayLike<number>, triangles: ArrayLike<number>): boolean {
+  for (let t = 0; t + 2 < triangles.length; t += 3) {
+    const a = labels[triangles[t]], b = labels[triangles[t + 1]], c = labels[triangles[t + 2]];
+    if ((a && b && a !== b) || (b && c && b !== c) || (a && c && a !== c)) return true;
+  }
+  return false;
 }
 
 export function toDirectionality(s: SurfaceExport, source: "labels" | "scalars", lut: Uint8Array, bins = 12): DirectionalityInput {
@@ -79,5 +93,6 @@ export function toDirectionality(s: SurfaceExport, source: "labels" | "scalars",
     labels: Array.from(labels).join("\n") + "\n",
     order: order.join("\n") + "\n",
     regions: order.length,
+    touching: regionsTouch(labels, s.triangles),
   };
 }

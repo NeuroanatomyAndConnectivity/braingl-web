@@ -151,7 +151,8 @@ export function computePieRanks(
   const i16 = new Int16Array(pieData);
   const total = nodeStart[n];
   const ranks = new Uint16Array(Math.max(total, 1) * 2);
-  const lo = p.threshold / scale, hi = p.maxThreshold / scale;
+  // raw values are integers; the small margin keeps |value| == maxThreshold inside when the division rounds down
+  const lo = p.threshold / scale, hi = p.maxThreshold / scale + 1e-3;
   const pos = p.sign !== 1, neg = p.sign !== 0;
   const minL2 = p.minLength * p.minLength;
   let maxCount = 0, visible = 0;

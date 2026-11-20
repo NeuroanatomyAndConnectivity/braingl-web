@@ -47,7 +47,7 @@ attribute `Col`.
 | `title` | string | Names the Blender collection `brainGL: <title>`. |
 | `units` | `"mm"` | |
 | `background` | `[r, g, b]`, 0 to 1 (sRGB) | World colour. The browser background colour for glyph scenes; `[0.05, 0.05, 0.06]` for Directionality. |
-| `camera` | object or `null` | `null` for scenes without a view (Directionality): the importer then frames everything from the left. |
+| `camera` | object or `null` | Written for every scene exported by the app, glyph and Directionality alike. `null` or absent in a hand-made scene: the importer then builds a fallback camera (below). |
 | `layers` | array | In drawing order. |
 
 ### `camera`
@@ -64,6 +64,18 @@ view space, so the camera orientation is the inverse rotation.
 | `rotation_quaternion` | `inverse(q)` written as `[w, x, y, z]` (Blender's order) |
 | `ortho_scale` | `2 * halfHeight * max(1, aspect)`: Blender applies the scale to the longer side of the image |
 | `aspect` | width / height of the browser view; the importer sets the render height to `width / aspect` |
+
+**Directionality scenes.** The Directionality workspace has a perspective camera that cannot be copied, so its scene
+carries a camera made by `defaultSceneCamera` (`src/export/blenderBundle.ts`): a left-lateral orthographic view (the viewer
+at -x looking toward +x, +z up, as the "L" view button) that frames the bounding box of all layers, grown by the radius of
+point and tube layers, with a 6 % margin, for the export aspect ratio (width / height). `halfHeight` is the larger of half
+the box height (z) and half the box width (y) divided by the aspect, times 1.06, the target is the centre of the box, and
+`distance` is twice the box diagonal plus 100 mm, so the camera is outside the scene.
+
+**Fallback camera.** If `camera` is missing, the import script builds a left-lateral orthographic camera (looking along
++x, +z up) that frames the bounding box of all layers for a 16:9 render, with a 6 % margin and `ortho_scale` chosen so that
+the box fits both the width and the height; the camera sits outside the box (twice its diagonal plus 100 mm). A scene with
+no vertex at all is framed as a box of +-100 mm.
 
 The importer parents a sun lamp (energy 3) to the camera as a headlight, as in the browser, and
 sets the view transform to Standard so that data colours stay as exported.
@@ -111,10 +123,21 @@ the camera. In the export:
 - the formulas for `G(j) - G(i)`, the polar offset and the colour are those of
   [Glyph types](glyph-types.md);
 - pies are resampled to at most 48 wedges each, every wedge taking the mean colour of the slices
-  it covers (a pie can have thousands of slices);
+  it covers (a pie can have thousands of slices); a pie with one or two slices uses 24 wedges, so that its triangles have
+  an area;
 - point and vector primitives are real geometry, so `primSize` is replaced by the layer `radius`
   (`max(0.03, 0.5 * primSize * mm per pixel)` from the browser);
-- diffpoints use the same build threshold rule as the screen, with a cap of `4 * maxPrims`.
+- diffpoints use the same prefilter and budget as the screen (`GlyphBakeInput.buildThreshold` and `budget`), then the same
+  display test on the difference (`threshold < diff <= maxThreshold`) and the minimum length;
+- glyph alpha is ignored: all primitives are opaque and carry only their colour;
+- the `targets` mask (second ROI) restricts the connexels as on screen.
+
+### Notes on the importer and on rendering
+
+- Point layers made as geometry-nodes point clouds (`--points nodes`, the default) are drawn by EEVEE as small diamonds and by
+  Cycles as spheres. Use `--points mesh` for identical geometry in both engines.
+- Flat (data-colour) layers do not light or shadow the anatomy in Cycles.
+- The arrows of the Directionality bake are projected into the tangent plane of the surface.
 
 ## PLY layout
 

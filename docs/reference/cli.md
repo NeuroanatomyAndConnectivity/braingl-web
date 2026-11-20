@@ -26,7 +26,7 @@ built on GitHub Actions (`GITHUB_ACTIONS` and `GITHUB_REPOSITORY` set); shader f
 | Parameter | Effect |
 |---|---|
 | `?workspace=glyphs` or `?workspace=directionality` | Start in that workspace (otherwise the last one used, stored in `localStorage` as `braingl.workspace`). |
-| `?data=<folder>` | Load the web glyphset in `<folder>` (a URL relative to the page, containing `glyphset.json`) instead of the bundled demo `data/nki_fsaverage4/`. A trailing slash is added if missing. `public/data/local/` is git-ignored and meant for your own data during development. |
+| `?data=<folder>` | Load the web glyphset in `<folder>` (a URL relative to the page, containing `glyphset.json`) instead of the bundled demo `data/nki_fsaverage4/`. Only addresses on the same origin as the app are accepted; others are ignored with a warning in the browser console. A trailing slash is added if missing. `public/data/local/` is git-ignored and meant for your own data during development. |
 
 ## `tools/make_glyphset.py`
 
@@ -51,16 +51,18 @@ python tools/make_glyphset.py {from-matrix,from-timeseries,nki-demo,to-braingl} 
 | `--name NAME` | Dataset name; default the output folder name. |
 | `--out DIR` | Required. Output folder. |
 
+Surfaces and overlays that would get the same name (for example two files that are both `pial`) are numbered `pial`, `pial_2`, ... in the manifest and in the file names, and the tool prints a note, because each is stored as `<name>.f32` and the second would otherwise overwrite the first; names are compared without regard to case, may not contain `/`, `\` or be `.` or `..`, and `connectivity` is reserved for the matrix of a float32 glyphset. `--names` must give one name per `--left` surface, and `--right` the same number of surfaces as `--left`; a malformed `--overlay` (not `name=left[,right]`), a missing file, or a matrix or overlay whose size does not match the surfaces stops the tool with a message that names the problem.
+
 All surfaces and overlays must have the same node count; the tool stops with an error if an overlay does not match. The left surfaces are stacked with the
 right ones; triangles of the right hemisphere are offset by the left node count.
 
 ### `from-matrix`
 
-Surfaces plus an existing node-by-node matrix.
+Surfaces plus an existing node-by-node matrix. Nodes whose row and column are entirely zero (the medial wall) are written to a mask (`mask.u8`), so they get no glyphs; no mask is written when every node has data.
 
 | Option | Meaning |
 |---|---|
-| `--matrix FILE` | Required. `.npy` (opened memory-mapped) or a raw little-endian float32 square matrix; `n` is computed from the file size. |
+| `--matrix FILE` | Required. `.npy` (opened memory-mapped) or a raw little-endian float32 square matrix; `n` is computed from the file size. The matrix is taken to be symmetric: only the upper triangle is stored. Its shape must match the number of surface nodes. |
 
 ```
 python tools/make_glyphset.py from-matrix --left lh.pial lh.inflated lh.sphere \
@@ -77,9 +79,7 @@ series.
 |---|---|
 | `--timeseries FILE...` | Required. Left (and right) `.func.gii` or `.npy` of shape `[nodes, time]`; files are concatenated along the node axis. |
 
-The correlation matrix is computed in float32 (`z @ z.T / T`) and stored in a temporary
-`_conn.npy` in the output folder, which is removed afterwards; plan for `4 n^2` bytes of RAM and
-disk. Nodes with a standard deviation below 1e-6 get zero correlation. A node mask (`mask.u8`) marks the valid nodes, so nodes without signal (medial wall) get no glyphs.
+The correlation matrix is computed in float32 (`z @ z.T / T`) and passed to the writer in memory (no temporary file is written); plan for `4 n^2` bytes of RAM. Nodes with a standard deviation below 1e-6 get zero correlation. A node mask (`mask.u8`) marks the valid nodes, so nodes without signal (medial wall) get no glyphs.
 
 ### `nki-demo`
 
@@ -97,7 +97,7 @@ sample, downloaded through nilearn (Pearson r per participant, averaged in Fishe
 
 Surfaces written: `pial`, `inflated`, `sphere`, `white`; overlays `sulc` and `curv`; the mask
 marks nodes with a valid time series in every participant; the diagonal is zeroed. The manifest
-also records `source` and `subjects`.
+also records `source`, `subjects` and a `credit` line naming the data providers and the FreeSurfer surfaces.
 
 ### `to-braingl`
 
@@ -156,8 +156,8 @@ listed ones; the view is for the camera (`left` lateral or `dorsal`).
 | `littlebrains` | left | `glyphStyle: points`, `glyphNodes: painted`, `littleBrains: true`, `lbMax: 60`, `glyphRadius: 0.09`, `glyphColorMode: 1`, `threshold: 0.35`, `minLength: 10`, `surfaceColorMode: seed`; seed node 1200; two painted regions of 14 mm radius around nodes 1200 and 700 | Anatomical background glyphs on two regions, coloured by connectivity. |
 | `bundles` | dorsal | `glyphStyle: off`, `threshold: 0.45`, `minLength: 60`, `surfaceAlpha: 0.25`; up to 4000 connexels, bundled; primitive radius 0.35 mm | Bundled long-range connections inside a transparent surface. |
 
-Node numbers refer to the bundled fsaverage4 demo. The camera of each scene is a 16:9
-orthographic camera framing the displayed surface. The default primitive radius is 0.25 mm and at
+Node numbers refer to the bundled fsaverage4 demo. The camera of each glyph scene is a 16:9
+orthographic camera framing the displayed surface; Directionality scenes get a left-lateral 16:9 camera that frames the mesh. The default primitive radius is 0.25 mm and at
 most 400,000 primitives are exported per layer.
 
 ## `tools/vendor_directionality.py`
@@ -175,7 +175,7 @@ breaks a patch.
 
 ## `public/blender/import_braingl.py`
 
-Imports a scene into Blender 3.6 or newer (tested with 4.x and the `bpy` 5.0.1 Python module).
+Imports a scene into Blender 3.6 or newer (tested with the `bpy` 5.0.1 Python module). Option names must be spelled in full (abbreviations are not accepted). Running the script again in the same file removes the collection, meshes, materials, cameras and lights of the earlier run that nothing uses any more.
 Three ways to run it:
 
 ```
@@ -191,10 +191,11 @@ or Scripting workspace, Open, Run Script (loads the `scene.json` next to the scr
 | `scene` (positional) | folder of the script, else the folder of a text block in the open file, else the working directory | Folder (or a file in it) containing `scene.json`. |
 | `--render FILE` | none | Render a still image to `FILE`. |
 | `--save FILE` | none | Save the result as a `.blend` file. |
-| `--cycles` | off | Render with Cycles instead of EEVEE. |
+| `--engine {eevee,cycles}` | `eevee` | Render engine. |
+| `--cycles` | off | Same as `--engine cycles`. Works with the stand-alone `bpy` module only: the Blender application reads the arguments after `--` for its own Cycles add-on and rejects it as ambiguous, so use `--engine cycles` there. |
 | `--samples N` | 64 | Render samples. |
 | `--resolution W` | 1920 | Width in pixels; the height follows the scene's aspect ratio. |
-| `--points {nodes,mesh}` | `nodes` | `nodes`: point glyphs as a geometry-nodes point cloud (light); `mesh`: real octahedra (portable, heavier). If the point-cloud nodes are not available the script falls back to octahedra by itself. |
+| `--points {nodes,mesh}` | `nodes` | `nodes`: point glyphs as a geometry-nodes point cloud (light; EEVEE draws them as small diamonds, Cycles as spheres); `mesh`: real octahedra (portable, heavier). If the point-cloud nodes are not available the script falls back to octahedra by itself. |
 | `--keep` | off | Keep the objects already in the `.blend` file (by default they are removed). |
 
 Layers of kind `segments` become three-sided tubes. The scene is imported into a new collection

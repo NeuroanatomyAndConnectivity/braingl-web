@@ -20,7 +20,7 @@ passes the filters. All glyph styles use the same ingredients.
 | `D(n)` | position of node `n` on the **displayed** surface (`surface`) | `u_posDisplay` |
 | `G(n)` | position of node `n` on the **glyph-geometry** surface (`glyphGeometry`) | `u_posGlyph` |
 | `C(n)` | position of node `n` on the **glyph-colour** surface (`colorSurface`) | `u_posColor` |
-| `L(n)` | position of node `n` on the **minimum-length** surface (`lengthSurface`) | `u_posLength` |
+| `L(n)` | position of node `n` on the **minimum-length** surface (`lengthSurface`; `-1` means the displayed surface, so then `L = D`) | `u_posLength` |
 | `s` | glyph scale, `glyphRadius` | `u_radius` |
 | `R` | user rotation of every glyph, built from `rotX`, `rotY`, `rotZ` (degrees, composed as Rx · Ry · Rz, so z is applied to a vector first) when `rotationEnabled` is on, otherwise the identity | `u_glyphRot` |
 | `V` | 3x3 rotation part of the camera view matrix | `mat3(u_view)` |
@@ -31,7 +31,10 @@ Four independent surfaces can therefore be chosen (display, glyph geometry, glyp
 colour, minimum length); they must share the node numbering. This is the same split
 that brainGL makes with `D_SURFACE`, `D_SURFACE_GLYPH_GEOMETRY` and
 `D_SURFACE_GLYPH_COLOR`. The surface for the minimum-length test has no brainGL
-counterpart: brainGL measures the length on the displayed surface.
+counterpart: brainGL measures the length on the displayed surface. Here the length is
+measured by default on the anatomical (pial) surface, and the option "displayed surface
+(as in brainGL)" (`lengthSurface = -1`) restores brainGL's behaviour. The same choice
+applies to the shaders, the pie ranks, the connexel buffers and the Blender bake.
 
 ### Which connexels are drawn
 
@@ -45,7 +48,10 @@ A connexel is drawn when both conditions hold (`passes()` in `common.glsl`, and 
 
 The effective threshold is `max(threshold, buildThreshold)`. `buildThreshold` is the
 smallest threshold at which the number of connexels fits the connexel budget
-(`budgetM`, millions); connexels below it are never sent to the GPU. See
+(`budgetM`, millions) and never exceeds it; connexels below it are never sent to the GPU.
+The upper threshold is not used when the buffers are built (they are built with
+`maxThreshold = maxAbs`); it is applied only when primitives are drawn, ranked or baked,
+so raising it later never finds connexels missing. See
 [Limits](limits.md#connexel-budget). Nodes without data (all-zero rows, or the `mask`
 of a web glyphset) and, if chosen, nodes outside the selected hemisphere or outside the
 painted region (`glyphNodes = "painted"`) get no glyph.
@@ -78,7 +84,7 @@ expresses the lift in glyph radii so that it scales with the glyph size.
   DTI convention); `rgb = (0.5, 0.5, 0.5)` if `d` is zero.
 - `glyphColorMode = 1` (value): `rgb = LUT((v - cmin) / (cmax - cmin))`, clamped to
   0 to 1, where `LUT` is the selected [colour map](parameters.md#colour-maps).
-- alpha `a = clamp(|v| / maxAbs, 0, 1) ^ (10 * (1 - glyphAlpha))`.
+- alpha `a = clamp(|v| / max(1, maxAbs), 0, 1) ^ (10 * (1 - glyphAlpha))`. The reference value `max(1, maxAbs)` is passed in the uniform `u_alphaRef`. For correlations (`maxAbs` at most 1) the raw `|r|` is used, as in brainGL; for matrices with larger weights `|v|` is divided by the largest weight.
 
 With `glyphAlpha = 1` the exponent is 0 and every glyph is opaque. Lower values make
 weak connections fade, which is the transparency rule of brainGL's
@@ -182,7 +188,12 @@ angle(m)  = (k + m) / count * 2 * PI,   m = 0 (start) or 1 (end)
 offset(m) = r * ( sin angle(m), cos angle(m) )
 ```
 
-The first slice starts at 12 o'clock and slices run clockwise. Pies always use the
+The corner offsets above describe the slice boundaries. So that the pie is an exact disc at any slice count, the rim
+vertices of a slice are placed at `r / cos(PI / count)` for three or more slices, so that the straight triangle edge is
+tangent to the circle, and the fragment shader (`pies.frag.glsl`) discards everything outside the radius `r`. One slice is
+a triangle around the whole circle, and two slices are two triangles around the half discs (`pies.vert.glsl`). The first
+slice starts at 12 o'clock and slices run clockwise. A connexel whose `|value|` equals the upper threshold is kept, in the
+ranks as on screen. Pies always use the
 displayed surface for position and ignore the glyph geometry, the rotation and the
 polar projection (these controls are hidden when "pies" is selected).
 
@@ -236,12 +247,25 @@ direction `C(j) - (C(i1)+C(i2))/2`, and `diff` replaces `v` in the value colour 
 in the alpha rule.
 
 **Building the data.** `buildDiffConnexels` produces 12-byte records `(i1, i2, j,
-unused, r1, r2)` for all mesh edges whose two endpoints both carry a glyph. A target is
-kept if **either** endpoint's value passes the build threshold, so that transitions from
-a strong to a weak connection survive. The build threshold starts at
-`max(0.5 * buildThreshold, 0.15 * maxAbs)` and is raised in steps of `0.025 * maxAbs`
-until the count fits `budgetM` million. The status line reports it as "edge-target
-pairs on GPU". For this style the `threshold` slider is the minimum *difference*.
+unused, r1, r2)` for all mesh edges whose two endpoints both carry a glyph, and its
+contract is the same on screen and in the Blender bake:
+
+- *Prefilter.* A target is kept if **either** endpoint passes the prefilter threshold,
+  that is if `max(r1, r2)` (sign `+`), `-min(r1, r2)` (sign `-`) or `max(|r1|, |r2|)`
+  (sign `+ / -`) reaches it, so that transitions from a strong to a weak connection
+  survive. The prefilter threshold is `max(0.5 * buildThreshold, 0.15 * maxAbs)`.
+- *Exact threshold.* One histogram of that key, with one bin per raw 16-bit magnitude,
+  gives the count for every candidate threshold. The threshold used is the smallest one
+  at or above the prefilter threshold whose count fits the budget (`budgetM` million
+  primitives), so the buffer never exceeds the budget. The status line reports it as
+  "edge-target pairs on GPU".
+- *No upper bound while building.* The records are built with `maxThreshold = maxAbs`,
+  because on screen the upper threshold bounds the *difference* (`diff <= maxThreshold`),
+  not the endpoint values.
+
+For this style the `threshold` slider is the minimum *difference*. Because
+differences of neighbouring profiles are small, switching to this style lowers a high
+threshold, see [Parameters](parameters.md#dataset-dependent-defaults).
 
 **Good for:** locating borders between areas with different connectivity profiles
 (Böttger et al., 2013; 2014: difference glyphs show differences between the connectivity
@@ -250,7 +274,9 @@ of neighbouring nodes).
 **Original:** `diffpoints.vs` computes the same Fisher-z difference
 (`diff = (exp(2 d) - 1) / (exp(2 d) + 1)`) and tests `diff > threshold` and the
 minimum length. In brainGL `makeDiffPoints` keeps a target only when **both** endpoints
-pass the threshold filter; the port keeps it when either does.
+pass the threshold filter; the port keeps it when either does. brainGL colours the glyph
+and sets its alpha from the first endpoint's `r`; the port uses the difference for both,
+and applies the upper threshold to the difference.
 
 ## Polar projection (glyph geometry "polar projection (sphere)")
 

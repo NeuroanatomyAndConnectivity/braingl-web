@@ -12,6 +12,8 @@ uniform float u_normalization; // 0 = constant radius, 1 = area proportional to 
 uniform float u_maxCount;
 
 flat out vec4 v_color;
+out vec2 v_local;   // offset from the pie centre in mm
+flat out float v_r; // pie radius in mm
 
 void main() {
   if (a_rank.x == 65535u || a_rank.y == 0u) {
@@ -26,10 +28,26 @@ void main() {
   float r = (u_normalization * sqrt(rel) + (1.0 - u_normalization)) * u_radius * 100.0;
   // smaller pies are drawn in front of larger ones
   c.z += u_radius * 100.0 * (1.0 - rel) * 0.5 + u_primBias;
-  if (a_corner > 0.5) {
+  vec2 off = vec2(0.0);
+  if (a_rank.y == 1u) {
+    // a single connection fills the whole disc: a triangle around the circle, clipped to it in the fragment shader
+    float t = a_corner * (2.0 * PI / 3.0);
+    off = 2.0 * r * vec2(sin(t), cos(t));
+  } else if (a_rank.y == 2u) {
+    // two connections: each half disc lies inside the triangle (-2r d, 2r b, 2r d), b = bisector, d = its normal
+    float tb = (float(a_rank.x) + 0.5) * PI;
+    vec2 b = vec2(sin(tb), cos(tb));
+    vec2 d = vec2(b.y, -b.x);
+    off = 2.0 * r * (a_corner < 0.5 ? -d : (a_corner < 1.5 ? b : d));
+  } else if (a_corner > 0.5) {
+    // the rim vertices sit on the tangent at the slice's bisector, so the triangle covers the
+    // whole circular sector; the fragment shader cuts it back to the circle (round pies at any count)
     float t = (float(a_rank.x) + a_corner - 1.0) / count * 2.0 * PI;
-    c.xy += r * vec2(sin(t), cos(t));
+    off = r / cos(PI / count) * vec2(sin(t), cos(t));
   }
+  c.xy += off;
+  v_local = off;
+  v_r = r;
   gl_Position = u_proj * vec4(c, 1.0);
   vec4 col = glyphColor(orientationColor(fetchPos(u_posColor, j) - fetchPos(u_posColor, i)), value);
   v_color = vec4(col.rgb, 1.0);

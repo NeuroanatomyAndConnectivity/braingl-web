@@ -10,14 +10,33 @@ export interface ControlOptions {
   visible?: () => boolean;
 }
 
+/** A number, or a function for values that depend on the loaded data (re-evaluated on every refresh). */
+export type Dynamic = number | (() => number);
+
 export interface SliderOptions extends ControlOptions {
-  min: number;
-  /** may depend on the loaded data */
-  max: number | (() => number);
-  step: number;
-  digits?: number;
+  min: Dynamic;
+  max: Dynamic;
+  step: Dynamic;
+  /** decimals shown in the number field; derived from the step when omitted */
+  digits?: Dynamic;
   /** fire onChange only when the slider is released (for expensive work) */
   lazy?: boolean;
+}
+
+const resolve = (v: Dynamic): number => (typeof v === "function" ? v() : v);
+
+/** Largest "nice" number (1, 2 or 5 times a power of ten) not above x; for slider steps derived from the data range. */
+export function niceStep(x: number): number {
+  if (!(x > 0) || !Number.isFinite(x)) return 1;
+  const e = Math.floor(Math.log10(x) + 1e-9);
+  const m = x / 10 ** e;
+  const k = m >= 5 - 1e-9 ? 5 : m >= 2 - 1e-9 ? 2 : 1;
+  return Number((k * 10 ** e).toPrecision(1));
+}
+
+/** Decimals needed to show multiples of `step`. */
+export function stepDigits(step: number): number {
+  return step > 0 && Number.isFinite(step) ? Math.min(8, Math.max(0, Math.ceil(-Math.log10(step) - 1e-9))) : 0;
 }
 
 interface Control {
@@ -121,26 +140,37 @@ export class Section<P extends object> {
     const p = this.panel.params as Record<keyof P, unknown>;
     const row = this.row(label, opt);
     row.classList.add("row-slider");
-    const digits = opt.digits ?? Math.max(0, Math.ceil(-Math.log10(opt.step)));
+    const min = () => resolve(opt.min);
+    const max = () => resolve(opt.max);
+    const step = () => resolve(opt.step);
+    const digits = () => (opt.digits === undefined ? stepDigits(step()) : resolve(opt.digits));
     const val = document.createElement("input");
-    const max = () => (typeof opt.max === "function" ? opt.max() : opt.max);
-    val.type = "number"; val.className = "row-value"; val.step = String(opt.step); val.min = String(opt.min);
+    val.type = "number"; val.className = "row-value";
     const range = document.createElement("input");
-    range.type = "range"; range.min = String(opt.min); range.step = String(opt.step);
+    range.type = "range";
+    val.setAttribute("aria-label", label);
+    range.setAttribute("aria-label", label);
     const show = () => {
+      // limits first: a range input clamps its value to the limits it has at that moment
+      range.min = val.min = String(min());
       range.max = val.max = String(max());
+      range.step = val.step = String(step());
       range.value = String(p[key]);
-      val.value = Number(p[key]).toFixed(digits);
+      val.value = Number(p[key]).toFixed(digits());
     };
     const set = (v: number, fire: boolean) => {
-      if (!Number.isFinite(v)) return;
-      p[key] = Math.min(max(), Math.max(opt.min, v));
+      if (!Number.isFinite(v)) { show(); return; }
+      p[key] = Math.min(max(), Math.max(min(), v));
       show();
       if (fire) this.panel.changed(key);
     };
-    range.addEventListener("input", () => set(Number(range.value), !opt.lazy));
+    range.addEventListener("input", () => {
+      // the slider moves in steps from the minimum, so its last stop can fall short of a data-dependent maximum
+      const v = Number(range.value);
+      set(v + step() > max() ? max() : v, !opt.lazy);
+    });
     range.addEventListener("change", () => { if (opt.lazy) this.panel.changed(key); });
-    val.addEventListener("change", () => set(Number(val.value), true));
+    val.addEventListener("change", () => set(val.value.trim() === "" ? NaN : Number(val.value), true));
     row.append(val, range);
     show();
     this.panel.register({ row, refresh: show, visible: opt.visible });
@@ -151,6 +181,7 @@ export class Section<P extends object> {
     const p = this.panel.params as Record<keyof P, unknown>;
     const row = this.row(label, opt);
     const sel = document.createElement("select");
+    sel.setAttribute("aria-label", label);
     let signature = "";
     const fill = () => {
       const o = options();
@@ -198,6 +229,7 @@ export class Section<P extends object> {
     const row = this.row(label, opt);
     const c = document.createElement("input");
     c.type = "color";
+    c.setAttribute("aria-label", label);
     const show = () => { c.value = String(p[key]); };
     c.addEventListener("input", () => { p[key] = c.value; this.panel.changed(key); });
     row.appendChild(c);
