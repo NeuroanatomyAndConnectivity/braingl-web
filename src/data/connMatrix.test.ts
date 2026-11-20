@@ -123,10 +123,10 @@ describe("non-finite input", () => {
     expect(c.get(0, 1)).toBe(0);
     expect(c.get(1, 2)).toBeCloseTo(0.75, 4);
   });
-  // BUG (src/data/connMatrix.ts, fromUpper): unlike fromFull, the range scan only skips NaN, so one
+  // Was a bug (fixed since): unlike fromFull, the range scan only skipped NaN, so one
   // +-Infinity in a float32 "upper" glyphset makes maxAbs infinite, every entry 0 and the scale Infinity
   // (get() then returns NaN).
-  it.fails("fromUpper maps +-Infinity to 0 and ignores it for the range", () => {
+  it("fromUpper maps +-Infinity to 0 and ignores it for the range", () => {
     const c = ConnMatrix.fromUpper(Float32Array.from([0.5, Infinity, 0.1, 0.75, -Infinity, 0.2]), n, 1);
     expect(c.maxAbs).toBeCloseTo(0.75, 6);
     expect(c.get(0, 2)).toBe(0);
