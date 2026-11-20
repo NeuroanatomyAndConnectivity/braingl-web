@@ -96,7 +96,8 @@ snap the main view to a standard direction; ++shift++ + click snaps the second v
 
 ![Colour map section: Min −0.5, Max 0.5, lower threshold 0.3; the map in the second view is now restricted to the motor cortex](../images/glyphs-seed-contrast.png)
 
-**Expected result.** Only the motor strip and a spot in the parietal operculum stay coloured.
+**Expected result.** The map shrinks to the precentral and postcentral gyri and a few patches
+around the Sylvian fissure.
 Set the three values back (−0.8, 0.8, 0.2) before you continue.
 
 **Why this works.** The main view answers "what does every node connect to?" with one glyph
@@ -263,8 +264,9 @@ more regular, because the folding of the cortex no longer shapes them.
 
 ![Thresholds section with "Length measured on" set to the displayed surface](../images/glyphs-length-surface.png)
 
-**Expected result.** A few glyphs gain or lose points. The effect is small at 20 mm and grows
-with the minimum length.
+**Expected result.** Some glyphs gain points. On the inflated surface nodes lie further apart,
+so the same number keeps more connections: about 10 % more at 20 mm and 40 % more at 40 mm
+for the left hemisphere of the demo.
 
 **Why the choices matter.**
 
@@ -299,6 +301,8 @@ direction.
 cortex. The motor belt shows red dots, not lines: its connections run left–right, straight
 away from you in a lateral view. Click **D** (dorsal) to see them as lines, then **L** again.
 
+![The same vector glyphs from above: the red vectors of the motor belt point to the other hemisphere](../images/glyphs-vectors-dorsal.png)
+
 5. Set **Minimum length (mm)** to 60 and **Scale** to 0.06. Click **R** to look at the medial
    side and right-click on the posterior cingulate cortex (node 1298). ++shift++ + click **R**
    turns the second view the same way.
@@ -323,13 +327,14 @@ Set **Minimum length** back to 20 and click **L**.
 ## 10. Sign and upper threshold
 
 1. Set **Thresholds → Sign** to *−*.
-2. Set **Threshold** to 0.15. Keep the vectors, with **Scale** 0.04.
+2. Set **Threshold** to 0.15. Keep the vectors, with **Scale** 0.04, and select a node in the
+   angular gyrus (node 64).
 
-![Negative correlations below −0.15 as vector glyphs; the posterior cingulate cortex is selected](../images/glyphs-sign.png)
+![Negative correlations below −0.15 as vector glyphs; a node in the angular gyrus is selected](../images/glyphs-sign.png)
 
-**Expected result.** Glyphs remain in a few places only: the posterior cingulate and medial
-prefrontal cortex on the one hand, and the anterior insula, the supramarginal gyrus and the
-intraparietal sulcus on the other. The status line reads `28 k connexels above threshold · 534 k on GPU (|r| ≥ 0.00)`.
+**Expected result.** Glyphs remain in a few places only. In the lateral view these are the
+angular gyrus and the superior frontal cortex on the one hand, and the frontal operculum with
+the anterior insula and the supramarginal gyrus on the other. The status line reads `28 k connexels above threshold · 534 k on GPU (|r| ≥ 0.00)`.
 
 **Why this works.** **Sign** chooses positive correlations (*+*), negative ones (*−*) or both
 (*+ / −*); the **Threshold** always applies to the absolute value. Negative correlations in
@@ -467,7 +472,7 @@ The polar projection removes the problem of hidden points altogether.
 neighbourhood of the node, in all colours because the directions on the sphere go all round.
 Near the central sulcus (right half of the picture) the right discs carry a large red patch
 in their middle: the homotopic connections of the motor cortex. In the prefrontal glyphs
-(left half) the right disc is nearly empty.
+(left half) the right disc is much sparser.
 
 **Why this works.** The sphere is unrolled around each node into a flat map, so every target
 has its own place and no point hides another. Distances from the centre are distances on the
