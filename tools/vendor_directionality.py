@@ -133,6 +133,10 @@ def main() -> None:
     patch(DEST / "gfx" / "view.ts", "    const h = Math.floor(container.clientHeight * dpr);\n",
           "    const h = Math.floor(container.clientHeight * dpr);\n    if (w === 0 || h === 0) return; // hidden workspace\n")
 
+    # 5. WebGL2 cannot generate mipmaps for depth textures: the call only logged GL_INVALID_OPERATION every frame
+    patch(DEST / "gfx" / "framebuffer.ts",
+          "      if (spec.depth && depthTexture) {\n        gl.bindTexture(gl.TEXTURE_2D, depthTexture);\n        gl.generateMipmap(gl.TEXTURE_2D);\n      }\n",
+          "")
     # 4. tests read the bundled demo data, which moved one level up and into public/directionality
     for t in DEST.rglob("*.test.ts"):
         txt = t.read_text()
@@ -161,8 +165,9 @@ def main() -> None:
         f"Revision: `{rev}`\n\n"
         "Licence: LGPL-3.0-or-later (see `LICENSE`, `LICENSE.LESSER`, `NOTICE.md` in this folder).\n\n"
         "Everything in this folder is upstream code. It is copied by\n"
-        "`tools/vendor_directionality.py`, which also applies four small patches\n"
-        "(data folder, panel host + programmatic `loadDataset`, no resize while hidden, test data paths)\n"
+        "`tools/vendor_directionality.py`, which also applies five small patches\n"
+        "(data folder, panel host + programmatic `loadDataset`, no resize while hidden, test data paths,\n"
+        "no mipmap generation on the depth texture)\n"
         "and generates `directionality.css` by scoping the upstream page styles to\n"
         "`#ws-directionality`. Change upstream and re-run the script rather than\n"
         "editing files here.\n")

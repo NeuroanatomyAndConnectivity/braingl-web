@@ -124,10 +124,6 @@ export function createFramebuffer(
           gl.generateMipmap(gl.TEXTURE_2D);
         }
       });
-      if (spec.depth && depthTexture) {
-        gl.bindTexture(gl.TEXTURE_2D, depthTexture);
-        gl.generateMipmap(gl.TEXTURE_2D);
-      }
     },
   };
 

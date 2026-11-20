@@ -731,7 +731,6 @@ async function run(opts) {
       assert(glErrors.length === 0, `${glErrors.length} WebGL error(s) logged: ${kinds.slice(0, 5).join(" | ")}`);
       return "";
     }, {
-      knownBug: "the Directionality workspace calls gl.generateMipmap on its DEPTH_COMPONENT32F depth texture on every frame (src/directionality/gfx/framebuffer.ts, generateMipmaps), which WebGL2 rejects with GL_INVALID_OPERATION",
     });
   } catch (e) {
     failedEarly = e;

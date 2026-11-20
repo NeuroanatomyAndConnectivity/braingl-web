@@ -439,8 +439,8 @@ anywhere. Some things therefore differ:
 |---|---|
 | "scene.json is not a brainGL-web Blender scene", or "No such file … scene.json" | Give the script the unzipped folder that contains `scene.json`, after the `--`. |
 | "ambiguous option: --cycles could match --cycles-device, --cycles-print-stats" | Use `--engine cycles`. The Blender application reads `--cycles…` options itself. |
-| "unrecognized arguments" | The options were placed before the `--`, or the `--` is missing. |
-| Nothing renders, or the render is the default cube | The script did not run: check that `--python` comes before the script and that the path is right. |
+| The options have no effect, or Blender reports an unknown argument | The script's options must come after a `--`. Before it, Blender reads them as its own. |
+| "Render error … cannot save" in your own script | Give Blender an absolute output path (`os.path.abspath`), as the recipes above do. |
 | Point glyphs are missing in the render | The point cloud needs a recent Blender. Import with `--points mesh` for real geometry. |
 | The viewport is slow | Point layers with several hundred thousand points are heavy as real geometry; keep `--points nodes`, or export fewer primitives. |
 | Colours look washed out or too contrasty | Keep the view transform **Standard** (**Render properties → Color Management**). *Filmic* and *AgX* change data colours. |

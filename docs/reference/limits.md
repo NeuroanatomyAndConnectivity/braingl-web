@@ -108,10 +108,11 @@ also the granularity of the build threshold.
 | Screenshot scale | 1 to 8 | slider range |
 | `.glyphset` hemispheres | 2 | loader |
 
-## Known upstream issue
+## Upstream issue patched in the vendored copy
 
-The Directionality workspace calls `generateMipmap` on its depth texture in every frame, which WebGL2 rejects with a
-console warning. It is harmless. The fix belongs in directionality-indicator-webgl and will be re-vendored.
+Upstream directionality-indicator-webgl calls `generateMipmap` on its depth texture in every frame, which WebGL2
+rejects with a console warning (depth textures cannot be mip-mapped, so the call never had an effect).
+`tools/vendor_directionality.py` removes that call when it copies the code; the fix should also be made upstream.
 
 ## What is not ported from brainGL
 

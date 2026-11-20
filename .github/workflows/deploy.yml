@@ -31,7 +31,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install mkdocs-material
-      - run: mkdocs build --strict -d dist/docs
+      # strictness is enforced in ci.yml; a documentation warning must not block the app from deploying
+      - run: mkdocs build -d dist/docs
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

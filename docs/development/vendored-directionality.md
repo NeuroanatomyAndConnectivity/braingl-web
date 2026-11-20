@@ -27,6 +27,7 @@ Each patch asserts that it applied, so an upstream change that breaks one fails 
 | 2 | `app.ts` | `runApp(container, panelHost = container)` places the panel in a host element, returns `null` instead of `undefined` when LIC is unsupported, and returns a `DirectionalityHandle` with `loadDataset(name, ply, labels, order)` and `requestRender()`. `ui/panel.ts` marks the loaded-dataset status line so it can be refreshed. | The glyph workspace sends data in memory through the bridge, and the app shell owns the layout. |
 | 3 | `gfx/view.ts` | Skip the resize when the width or height is 0. | A hidden workspace would otherwise resize to 0 x 0 and re-allocate the LIC targets. |
 | 4 | `*.test.ts` | Test data paths point to `public/directionality`. | The demo data moved. |
+| 5 | `gfx/framebuffer.ts` | The `generateMipmap` call on the depth texture is removed. | WebGL2 cannot mip-map depth textures; the call only logged `GL_INVALID_OPERATION` every frame. |
 
 ## How to update
 
