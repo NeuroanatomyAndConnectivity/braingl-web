@@ -181,15 +181,32 @@ triangle only.
 
 ### ROI files
 
-`parseRoiFile` returns a 0/1 mask with one entry per node. The format is chosen from the file
-name. A file that is shorter than the node count leaves the remaining nodes outside the ROI.
-`#` comment lines are skipped in the first two formats.
+The format is chosen from the file name. A file that is shorter than the node count leaves the
+remaining nodes outside the ROI. `#` comment lines are skipped in the first two formats.
 
 | Extension | Format | A node is in the ROI when |
 |---|---|---|
 | `.1D` (any case) | one number per node, whitespace separated | value > 0.5 |
 | `.rgb` | `r g b` per node (3 numbers) | any channel is below 1.0, that is, the colour is not white |
-| anything else | a list of nodes: the first token of each line is a node index | listed (indices outside `0 .. n-1` and lines whose first token is not an integer are ignored) |
+| anything else | a list of nodes: the first token of each line is a node index, optionally followed by a region number | listed (indices outside `0 .. n-1` and lines whose first token is not an integer are ignored) |
+
+ROIs named in a `.glyphset` file (`parseRoiFile`) are one region, as in brainGL. **Load ROI…**
+in the glyph workspace (`parseRoiRegions`, then `assignRoiRegions`) reads the same files but
+can restore several regions:
+
+- `.1D`: one region.
+- `.rgb`: one region per distinct colour other than white, painted in that colour (rounded to
+  8 bits per channel). A file with more than 255 distinct colours is a colour map rather than
+  painted regions and gives one region.
+- id list: if every id line has an integer second token (`<node> <region number>`, as written
+  by **Save labels** and by brainGL's `exportColors`), one region per distinct region number;
+  otherwise one region. A node listed twice keeps its last region number.
+
+The first region without a colour of its own gets the current paint colour (and joins a painted
+region of that colour); the others get the next unused colour of a fixed palette (`#4e79a7`,
+`#e15759`, `#59a14f`, ...), in ascending order of the region number. The file's nodes replace
+their previous label; other painted nodes are kept. At most 255 regions fit; a file that would
+need more is refused without changing the paint.
 
 ### Other loose files and the brainGL formats not read
 
@@ -297,7 +314,8 @@ by a final newline. This is brainGL's / AFNI's `.1D`.
 
 `regions.1D.roi`: one line per painted node, `<node index> <region number>`. Region numbers
 start at 1, in the order in which paint colours were first used; the colours themselves are not
-saved.
+saved. **Load ROI…** reads the file back as the same regions, with the colours chosen as
+described under [ROI files](#roi-files); a scene file keeps the colours as well.
 
 ### `.cxls`
 

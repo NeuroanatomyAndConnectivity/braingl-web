@@ -15,8 +15,10 @@ src/
     builders.ts               CPU side: connexel buffers, pie sort and ranks, diff records,
                               "make connections", mean connectivity
     picking.ts                ray-triangle picking, brush growth, mean edge length
+    roiRegions.ts             regions of a loaded ROI file -> labels and paint colours (`assignRoiRegions`)
   render/                   WebGL2 drawing of the glyph workspace
     renderer.ts               GlyphRenderer: GPU resources, VAOs, draw order, uniforms
+    cursorVisibility.ts       whether the selection cross-hair's node can be seen (hemisphere, normal, ray test)
     shaders.ts                imports the GLSL files as raw strings and resolves "#include common"
     colormaps.ts              colour maps as 256-entry lookup tables
   shaders/                  GLSL ES 3.00 (one file per stage and glyph type)
@@ -25,7 +27,7 @@ src/
     littlebrain.vert/.frag.glsl   anatomical background glyphs
     surface.vert/.frag.glsl       the displayed surface
     segments.vert.glsl            connexel and bundle lines
-    marker.vert/.frag.glsl        selection cursor
+    marker.vert/.frag.glsl        selection cross-hair (drawn on top, only when cursorVisibility says so)
   gfx/
     gl.ts                     Program wrapper (cached uniform lookup), data textures, buffers
     camera.ts                 orthographic quaternion trackball in millimetres
@@ -85,7 +87,8 @@ Test files sit next to the code they test as `*.test.ts` (see [Testing](testing.
 4. **Parameters to uniforms.** `GlyphApp.drawState` turns `GlyphParams` into a `DrawState`;
    `GlyphRenderer.glyphUniforms` sets the uniforms of `common.glsl`.
 5. **Draw.** `frame()` runs when `invalidate()` has been called: surface, little brains, segments, glyphs,
-   transparent surface, cursor; once for the main view and once for the inset.
+   transparent surface, cursor (only if its node can be seen in that view, `cursorVisible`); once for the main
+   view and once for the inset.
 6. **Interaction.** Pointer events go through `bindEvents`; `pickAt` casts a ray with `Camera.ray` and
    `pickNode`; `selectNode` writes the seed row to a vertex attribute buffer; `paintAt` edits the label array.
 7. **Export.** `exportState()` snapshots the state (including the build threshold, the budget and the target mask, which the baker needs to select the same primitives as the screen); `bakeGlyphScene` produces layers; `buildBundleZip` packs them. `sceneFromDataset` builds the same snapshot without a UI.

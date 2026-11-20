@@ -41,6 +41,17 @@ browser was done by Daniel S. Margulies using Claude.
 - Documentation site (MkDocs Material), a unit and property test suite on synthetic datasets, integration tests on the
   demo data (`src/integration`), tests of the baker and the scene builder, Python tests of the data tool (190 cases), Blender importer tests (72 checks) and a headless-Chrome smoke test (17 checks); about 5,700 Vitest cases run in about 5 s.
 
+### Fixed
+
+- Painted regions saved with "Save labels" (`regions.1D.roi`, `<node> <region>`) load back as the same regions: "Load
+  ROI…" makes one region per region number of an id list (the first in the current paint colour, the others in distinct
+  palette colours) and one region per colour of an `.rgb` file; `.1D` masks and plain id lists still give one region.
+- The selection cross-hair no longer shows through the surface: in each view it is drawn only when its node can be seen
+  (hemisphere shown; with an opaque surface, normal facing the viewer and nothing in front of it).
+- The browser smoke test passes on software WebGL (SwiftShader on GitHub's Linux runners): it detects the renderer,
+  starts the glyph workspace with the smallest connexel budget there and allows more time; on a GPU nothing changes.
+  CI keeps screenshots of failed checks.
+
 ### Notes
 
 - No version or release date has been assigned; the repository is

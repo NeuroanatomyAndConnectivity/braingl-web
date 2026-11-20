@@ -24,6 +24,11 @@ what a plain left-button drag does.
 
 The pointer is a hand (`grab`) in Navigate and a cross-hair in the other tools.
 
+The selected node is marked by a white ring with a cross in both views. A view leaves the mark
+out while the node is out of sight there: on the far side of an opaque surface, behind the
+other hemisphere, or in a hemisphere that is switched off. Through a transparent surface
+(alpha below 1) it is always shown.
+
 ### Pointer gestures
 
 Evaluated in this order for a pointer press (`pointerdown`):

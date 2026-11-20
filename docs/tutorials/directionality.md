@@ -61,7 +61,7 @@ last dataset are remembered by the browser.
 | **LIC** | **Streamline length (iterations)**, **High contrast**, **Emphasize singularities**. |
 | **Scene** | **Background** colour. |
 | **Surface shading** | **Ambient**, **Diffuse**, **Specular (glare)**, **Shininess (sharpness)**. |
-| **Glyphs** | Placement of the arrows: **Borders only**, **Density (smaller = denser)**, **Size**, **Distance from surface**. Below, the *Glyph designer* with a preview: **Length**, **Head/body ratio**, **Head width**, **Body width**, **Opacity**, **Flip direction**, **Color**. |
+| **Glyphs** | Placement of the arrows: **Borders only**, **Density (smaller = denser)**, **Size**, **Distance from surface**. Below, the *Glyph designer* with a preview: **Length**, **Head/body ratio**, **Head width**, **Body width (fraction of head)**, **Opacity**, **Flip direction**, **Color**. |
 | **Screenshot** | **Resolution (DPI)**, **Current view**, **All canonical views**: PNG files with a transparent background, cropped to the brain. |
 | **Reset to defaults** | Clears the settings, the camera and the remembered dataset, then reloads the page. |
 
@@ -147,8 +147,9 @@ more than the three files, the panel says "Need exactly one .ply, .labels, and .
 The first bridge sends the surface map that the glyph workspace currently shows.
 
 1. Switch to the **Connectivity glyphs** tab.
-2. Set **View → Hemispheres** to *left* and **Surface → Colour** to
-   *vertex data (seed connectivity)*, so that the map is visible on the main surface.
+2. Set **View → Hemispheres** to *left*, set **Surface → Colour** to
+   *vertex data (seed connectivity)* and untick **Glyphs → Show glyphs**, so that the map is
+   visible on the main surface.
 3. Right-click a node to select it. The example uses node 1200 of the demo, in the inferior
    parietal cortex. Its connectivity map appears on the surface.
 4. Open the **Export** section at the bottom of the panel and click **Map → Directionality**.
@@ -225,7 +226,8 @@ Directions exist only where regions **touch**, because they are derived at share
   colours) to derive a direction between them."
 
 To change the order, clear the paint (**Regions & painting → Clear**) and paint the regions in
-the order you want, or tick **Flip direction** in the Directionality panel to reverse it.
+the order you want, or untick **Glyphs → Flip direction** in the Directionality panel to
+reverse it.
 
 ## 7. Read the arrows
 
@@ -286,6 +288,7 @@ with LIC, use the **Screenshot** section of the panel instead.
 | "Paint at least two regions …" | All paint has one colour. Change **Paint colour** before painting the second region. |
 | "There is no surface map to send: …" | Select a node, or choose an overlay under **Surface → Colour**. |
 | "The surface map has too few non-zero values." | The map has fewer than 24 non-zero values; choose another seed or overlay. |
+| "The bins of the surface map do not share a border on this surface, …" | No two of the 12 bins are adjacent anywhere on the mesh, so there is no border to derive a direction from. Choose another map. |
 | "Need exactly one .ply, .labels, and .labelorder" | Select the three files together in the file dialogue. |
 | "Error: Not a PLY file (missing 'ply' magic)", "Only ASCII PLY is supported …" or "only triangle faces supported" | The surface must be an ASCII PLY file with triangles; write it as in step 3. |
 | No arrows after loading your own files | The numbers in `.labelorder` do not occur in `.labels`, or the regions do not touch. |

@@ -79,13 +79,16 @@ glyph shows all connexels of one node that pass the filters.
    also selects a node. The **Seed** tool (key ++s++) does the same with a plain click.
 2. Look at the second view at the lower left. It shows the connectivity map of the node you
    selected, on the surface chosen in **View → Second view surface** (*pial*).
-3. Right-click in the second view. The cross-hair moves in both views.
+3. Right-click in the second view. The selection moves in both views.
 
 ![A node in the left motor cortex is selected; the second view shows its connectivity map on the pial surface](../images/glyphs-two-views.png)
 
-**Expected result.** A cross-hair marks the node in both views and the status line ends with
-`node 645 (-51, 1, 57)`, the node number and its position on the displayed surface in
-millimetres. The second view shows a red band along the central sulcus.
+**Expected result.** A cross-hair marks the node in the main view and the status line ends
+with `node 645 (-51, 1, 57)`, the node number and its position on the displayed surface in
+millimetres. The second view shows a red band along the central sulcus; the darkest red is the
+node itself. The cross-hair is drawn only where the node can be seen, so it is missing when the
+node lies on the far side of the brain, in a hidden hemisphere, or (on the pial surface of the
+second view) deep in a sulcus, as node 645 does here.
 
 Each view has its own camera. Drag rotates, ++shift++ + drag pans and the wheel zooms about
 the pointer, in whichever view the pointer is over. The buttons **L R A P D V** in the toolbar
@@ -322,7 +325,7 @@ anterior–posterior (green) lines. In the 2014 paper, a minimum length of up to
 detail, and larger values progressively removed known networks until only the longest
 connections were left; explore the range with the slider.
 
-Set **Minimum length** back to 20 and click **L**.
+Set **Minimum length** back to 20, click **L**, and ++shift++ + click **L** for the second view.
 
 ## 10. Sign and upper threshold
 
@@ -493,7 +496,10 @@ Set **Glyph geometry** and **Glyph colour** back to *pial*, **Threshold** to 0.5
 
 **Expected result.** A small glyph sits on every mesh edge, between two nodes. Look at
 **Thresholds**: the app has set **Threshold** to 0.193 and **Minimum length** to 0 for you.
-The status line counts `edge–target pairs on GPU`.
+The status line reads `3.91 M edge–target pairs on GPU (|r| ≥ 0.34)`: the connexel budget also
+limits the differences sent to the graphics card, here to those of at least 0.34, so for the
+whole hemisphere a threshold below that value changes nothing. With fewer glyphs, for example
+in a painted region ([Manual parcellation](parcellation.md)), the limit is lower.
 
 **What changed, and why.** A difference glyph shows, for the two nodes joined by an edge,
 the targets to which their connectivity *differs* by more than the threshold. Differences

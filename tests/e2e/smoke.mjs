@@ -12,11 +12,13 @@
 //   --headed           show the browser window
 //   --screenshots      save a screenshot after every check, not only after failed ones
 //   --artifacts <dir>  where screenshots go (default tests/e2e/.artifacts, git-ignored)
+//   --software-gl      render with SwiftShader (software WebGL) on macOS too, as on a CI runner
 //
 // Environment
 //   CHROME_PATH        Chrome / Chromium executable. Default: Google Chrome.app on macOS,
 //                      `google-chrome` (looked up on PATH) elsewhere.
 //   E2E_NO_SANDBOX=1   pass --no-sandbox (also done automatically when CI is set or running as root)
+//   E2E_SOFTWARE_GL=1  same as --software-gl
 //
 // What is checked (one PASS / FAIL line each, summary at the end, exit code 1 if anything failed):
 //   1. the demo glyphset loads (window.braingl.glyphs.ds, 5124 nodes)
@@ -29,11 +31,20 @@
 //   7. "Export for Blender" downloads a zip with scene.json and the layers it lists
 //   8. the view (surface, camera, glyph style) is restored after a reload
 //
-// Checks that document a defect of the application are registered with `knownBug` and reported as
-// "KNOWN BUG (expected failure)"; they do not fail the run, and say so once the defect is fixed:
-//   2*. diffpoints draws nothing at the default threshold (the regular diffpoints check lowers it)
-//   9.  the loading progress box is never visible
-//   10. the Directionality workspace raises a WebGL error (glGenerateMipmap) on every frame
+//   9. the loading progress box is visible while the demo loads
+//  10. no WebGL errors are logged
+//  (2*. diffpoints also draws at the default threshold; the regular diffpoints check lowers it)
+//
+// Software WebGL (SwiftShader, llvmpipe: GitHub's Linux runners have no GPU). The renderer is read
+// before the first page load. On a software renderer the glyph workspace starts with the smallest
+// connexel budget (0.5 million instead of 4: SwiftShader draws instanced glyphs at a few
+// microseconds per instance, so the default budget takes about a minute per frame on a 4-core
+// runner) and the time limits are raised (settling 240 s, each check 360 s instead of 30 s and
+// 60 s). Every check still runs with the same pixel thresholds. On a real GPU nothing changes.
+//
+// Checks that document a defect of the application can be registered with `knownBug`; they are
+// reported as "KNOWN BUG (expected failure)", do not fail the run, and say so once the defect is
+// fixed. None is registered at present.
 //
 // Pixels are read in the page: the WebGL canvases are created with preserveDrawingBuffer, so they
 // can be copied into a 2D canvas and inspected with getImageData. This file is plain JavaScript on
@@ -54,11 +65,15 @@ const SEED_NODE = 1200;
 const VIEWPORT = { width: 1400, height: 900, deviceScaleFactor: 1 };
 const GLYPH_CANVAS = "#ws-glyphs .ws-view canvas";
 const DIR_CANVAS = "#ws-directionality .ws-view canvas";
+/** Renderer strings of software WebGL implementations (UNMASKED_RENDERER_WEBGL). */
+const SOFTWARE_RENDERER = /SwiftShader|llvmpipe|softpipe|Software Rasterizer|Microsoft Basic Render/i;
+/** Connexel budget (millions) used on a software renderer: the smallest the panel offers. */
+const SOFTWARE_BUDGET_M = 0.5;
 
 // ------------------------------------------------------------------- options
 
 function parseArgs(argv) {
-  const o = { url: null, port: 4317, timeout: 90000, headed: false, screenshots: false, artifacts: path.join(ROOT, "tests/e2e/.artifacts") };
+  const o = { url: null, port: 4317, timeout: 90000, headed: false, screenshots: false, softwareGl: process.env.E2E_SOFTWARE_GL === "1", artifacts: path.join(ROOT, "tests/e2e/.artifacts") };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const value = () => {
@@ -71,6 +86,7 @@ function parseArgs(argv) {
     else if (a === "--artifacts") o.artifacts = path.resolve(value());
     else if (a === "--headed") o.headed = true;
     else if (a === "--screenshots") o.screenshots = true;
+    else if (a === "--software-gl") o.softwareGl = true;
     else if (a === "--help" || a === "-h") {
       console.log(fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").filter((l) => l.startsWith("//")).map((l) => l.slice(3)).join("\n"));
       process.exit(0);
@@ -383,7 +399,7 @@ const pct = (part, total) => `${((100 * part) / Math.max(1, total)).toFixed(1)}%
 
 async function run(opts) {
   const cleanup = [];
-  const ctx = { opts, page: null, checkTimeout: 60000 };
+  const ctx = { opts, page: null, checkTimeout: 60000, settleTimeout: 30000 };
   const problems = []; // console errors, page errors, failed requests, HTTP errors
   const glErrors = []; // WebGL errors, which Chrome logs as console warnings
   let failedEarly = null;
@@ -402,12 +418,14 @@ async function run(opts) {
       executablePath: chromePath(),
       headless: !opts.headed, // puppeteer >= 22: true is the "new" headless mode
       args: [
-        ...(mac ? ["--use-angle=metal"] : ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"]),
+        ...(mac && !opts.softwareGl ? ["--use-angle=metal"] : ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"]),
         "--ignore-gpu-blocklist", "--enable-webgl", "--enable-gpu", "--hide-scrollbars",
         `--window-size=${VIEWPORT.width},${VIEWPORT.height}`,
         ...(noSandbox ? ["--no-sandbox"] : []),
       ],
       defaultViewport: VIEWPORT,
+      // a single frame of software WebGL can outlast puppeteer's default of 180 s per protocol call
+      protocolTimeout: 600000,
     });
     const chrome = browser.process();
     if (chrome) { children.add(chrome); chrome.once("exit", () => children.delete(chrome)); }
@@ -438,6 +456,31 @@ async function run(opts) {
 
     const page = await browser.newPage();
     ctx.page = page;
+
+    // Which WebGL implementation renders? Read once on a blank page, before the app first loads.
+    const renderer = await page.evaluate(() => {
+      const gl = document.createElement("canvas").getContext("webgl2");
+      if (!gl) return "";
+      const ext = gl.getExtension("WEBGL_debug_renderer_info");
+      const r = String(gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
+      gl.getExtension("WEBGL_lose_context")?.loseContext();
+      return r;
+    });
+    const software = SOFTWARE_RENDERER.test(renderer);
+    console.log(`WebGL renderer: ${renderer || "(no WebGL2)"}${software ? " (software)" : ""}`);
+    if (software) {
+      ctx.checkTimeout = 360000;
+      ctx.settleTimeout = 240000;
+      console.log(`note: software WebGL, so the connexel budget starts at ${SOFTWARE_BUDGET_M} M and the time limits are raised (see the header of this file)`);
+      // merged into the stored settings before every page load (the app reads them on start)
+      await page.evaluateOnNewDocument((budget) => {
+        try {
+          const key = "braingl.glyphs.params";
+          const p = JSON.parse(localStorage.getItem(key) ?? "{}");
+          localStorage.setItem(key, JSON.stringify({ ...p, budgetM: budget }));
+        } catch { /* storage unavailable: the default budget applies */ }
+      }, SOFTWARE_BUDGET_M);
+    }
     const isFavicon = (u) => /\/favicon\.ico(\?|$)/.test(u);
     page.on("console", (m) => {
       if (/^warn/.test(m.type()) && /GL_INVALID|GL_OUT_OF_MEMORY|WebGL: (INVALID|CONTEXT_LOST)/.test(m.text())) glErrors.push(m.text().replace(/^\[\.WebGL-0x[0-9a-f]+\]\s*/i, ""));
@@ -458,7 +501,7 @@ async function run(opts) {
     const ev = (fn, ...args) => page.evaluate(fn, ...args);
     /** Wait for a canvas to be redrawn and stable, then keep its pixels under `name`. */
     const settleAndSnap = async (name, sel) => {
-      await ev((s) => window.__e2e.settle(s), sel);
+      await ev((s, t) => window.__e2e.settle(s, { timeoutMs: t }), sel, ctx.settleTimeout);
       return ev((n, s) => window.__e2e.snap(n, s), name, sel);
     };
     const glyphErrors = () => ev(() => [...document.querySelectorAll("#ws-glyphs .hud-status .err")].map((e) => e.textContent).join("; "));
@@ -710,7 +753,7 @@ async function run(opts) {
       await page.goto(url + "?workspace=glyphs", { waitUntil: "load", timeout: opts.timeout });
       await page.waitForFunction(() => !!window.braingl?.glyphs?.ds, { timeout: opts.timeout });
       await ev(installPageHelpers);
-      await ev((s) => window.__e2e.settle(s), GLYPH_CANVAS);
+      await ev((s, t) => window.__e2e.settle(s, { timeoutMs: t }), GLYPH_CANVAS, ctx.settleTimeout);
       const got = await view();
       await assertNoAppError();
       assert(got.glyphStyle === target.glyphStyle, `glyphStyle is ${got.glyphStyle} after the reload, expected ${target.glyphStyle}`);

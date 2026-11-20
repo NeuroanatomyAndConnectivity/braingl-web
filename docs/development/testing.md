@@ -11,8 +11,8 @@ All commands are run from the repository root.
 | Integration tests on the demo data | `src/integration/` | `npm test` (same run) | yes |
 | Type check (covers the tests) | `src`, `tools` | `npm run typecheck` | yes |
 | Data tool | `tests/python/test_make_glyphset.py` | `python -m pytest tests/python -q` | yes |
-| Blender importer | `tests/blender/test_import.py` | `blender --background --python tests/blender/test_import.py` | no |
-| Browser smoke test | `tests/e2e/smoke.mjs` | `npm run test:e2e` | no |
+| Blender importer | `tests/blender/test_import.py` | `blender --background --python tests/blender/test_import.py`, or `python tests/blender/test_import.py` with the `bpy` module | yes, not blocking |
+| Browser smoke test | `tests/e2e/smoke.mjs` | `npm run test:e2e` | yes (software WebGL), not blocking |
 
 ## Unit and property tests (Vitest)
 
@@ -26,7 +26,7 @@ npx vitest run -t "pie"         # tests whose name contains "pie"
 Vitest runs in its Node environment with `vitest.config.ts`, which merges `vite.config.ts`, collects `src/**/*.test.ts`, and
 raises the timeouts (30 s per test, 60 s per hook) for the brute-force references and the 26 MB demo matrix. Tests therefore must not touch the DOM or WebGL. Code that does (`glyphApp.ts`,
 `render/renderer.ts`) is covered by the end-to-end test, and the testable logic is kept in pure modules (`builders.ts`,
-`connMatrix.ts`, `picking.ts`, `io/`, `export/`, `bridge/`).
+`connMatrix.ts`, `picking.ts`, `roiRegions.ts`, `render/cursorVisibility.ts`, `io/`, `export/`, `bridge/`).
 
 Test files sit next to the module they test (`foo.ts` and `foo.test.ts`); a second file `foo.datasets.test.ts` holds
 the tests that run over the synthetic datasets.
@@ -108,7 +108,7 @@ They run as part of `npm test`. One finding is worth knowing: on fsaverage the n
 
 ### Current size
 
-At the time of writing: about 5,700 Vitest cases (about 5 s), 190 pytest cases, 72 Blender import checks (with `bpy` 5.0.1) and 17 browser smoke checks.
+At the time of writing: about 5,760 Vitest cases (about 5 s), 190 pytest cases, 72 Blender import checks (with `bpy` 5.0.1) and 17 browser smoke checks.
 
 ### Known-defect and pending cases
 
@@ -164,8 +164,9 @@ python tests/blender/test_import.py        # with a Python that has the standalo
 
 `tests/blender/test_import.py` loads `public/blender/import_braingl.py`, writes tiny scenes (a `scene.json` and
 binary PLY layers in the layout of `writePly`) and checks the objects, materials, cameras and renders it creates. It has
-its own small runner that prints PASS, FAIL, SKIP or XFAIL per case; without Blender it skips itself. CI does not run
-it because Blender is not installed there. Cases marked `@known_bug` turn into failures when the defect is fixed.
+its own small runner that prints PASS, FAIL, SKIP or XFAIL per case; without Blender it skips itself. CI runs it with
+the `bpy` module from PyPI (`pip install bpy numpy`, Python 3.11). Cases marked `@known_bug` turn into failures when
+the defect is fixed.
 
 ## End-to-end smoke test
 
@@ -180,18 +181,28 @@ or install Google Chrome. It prints one PASS or FAIL line per check and exits 1 
 demo glyphset loads (5,124 nodes); every glyph style and the polar geometry draw pixels, differ from one another and
 turn off again; selecting a seed recolours the inset; no console or page errors; the Directionality workspace mounts
 and draws; the bridge loads a map into it; "Export for Blender" downloads a zip whose layers match `scene.json`; the
-view is restored after a reload. Options: `--url`, `--port`, `--timeout`, `--headed`, `--screenshots`, `--artifacts`.
-Screenshots of failures go to `tests/e2e/.artifacts` (git-ignored). The header of the script has the current list of
-checks, including those registered as known defects.
+view is restored after a reload. Options: `--url`, `--port`, `--timeout`, `--headed`, `--screenshots`, `--artifacts`,
+`--software-gl`. Screenshots of failures go to `tests/e2e/.artifacts` (git-ignored). The header of the script has the
+current list of checks.
+
+The script prints the WebGL renderer first. On a software renderer (SwiftShader on GitHub's Linux runners, llvmpipe)
+it starts the glyph workspace with the smallest connexel budget, 0.5 million, and allows 240 s for a canvas to settle
+and 360 s per check; the pixel thresholds stay the same. SwiftShader draws instanced glyphs at a few microseconds per
+instance, so the default budget of 4 million takes about 20 s per frame on a 12-core laptop and far longer on a
+4-core runner. `--software-gl` (or `E2E_SOFTWARE_GL=1`) forces SwiftShader on macOS as well, to reproduce a CI run
+locally.
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests, in three jobs:
+`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests, in five jobs:
 
 1. **web**: `npm ci`, `npm run typecheck`, `npm test` (unit, property and integration tests) and `npm run build`, on
    Node 20.
 2. **python**: `pytest tests/python -q` on Python 3.12 with numpy, scipy, nibabel and pytest.
 3. **docs**: `mkdocs build --strict` with mkdocs-material.
+4. **e2e**: `npm run test:e2e` in Google Chrome with SwiftShader (the build uses the base path `/braingl-web/`, as the
+   deployed site does); screenshots of failed checks are uploaded as the artifact `e2e-screenshots`.
+5. **blender**: `python tests/blender/test_import.py` with the `bpy` module.
 
-The end-to-end test and the Blender tests are not part of CI. Run the three npm checks (and the others when you touch
-their areas) before opening a pull request; see [Contributing](contributing.md).
+The Blender job is marked `continue-on-error` (a failure is reported but does not block merging); the browser smoke test is a required check. Run the three npm
+checks (and the others when you touch their areas) before opening a pull request; see [Contributing](contributing.md).
