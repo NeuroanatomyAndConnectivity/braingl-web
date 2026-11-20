@@ -11,22 +11,18 @@ kind and ordered roughly by value within each group. When you finish one, delete
 - Checks that pass: type-check, about 5,760 unit, property and integration tests, 190 tests of the Python
   data tool, 72 checks of the Blender import script (with the `bpy` 5.0.1 module, on macOS and on the Linux
   CI runner), and the 17-step browser smoke test (locally, and against the deployed site).
-- Not yet confirmed: the browser smoke test on GitHub's Linux runner (see the first item below).
+- All five CI jobs pass on GitHub's Linux runners, including the browser smoke test under software WebGL.
 
 ## To verify
 
-1. **Browser smoke test in CI.** The `e2e` job in `.github/workflows/ci.yml` failed on the hosted runner
-   because software WebGL needed more than 30 s per frame. `tests/e2e/smoke.mjs` now detects a software
-   renderer, lowers the connexel budget and raises its time limits; this passed with SwiftShader forced on a
-   Mac but has not been seen green on the runner. Once it is, remove `continue-on-error` from the `e2e` job.
-2. **The Blender application.** `public/blender/import_braingl.py` was only run through the standalone `bpy`
+1. **The Blender application.** `public/blender/import_braingl.py` was only run through the standalone `bpy`
    module, version 5.0.1. Open an exported zip in the Blender application itself (current release and 3.6 LTS)
    and follow `docs/tutorials/blender.md`; the code paths for versions before 4.1 (`loop_total`, node-group
    sockets, `use_nodes`) are written but untested. Inside the application use `--engine cycles`; the `--cycles`
    alias is consumed by the Cycles add-on there.
-3. **Real drag and drop.** File loading was tested through the file-picker code path with files built in the
+2. **Real drag and drop.** File loading was tested through the file-picker code path with files built in the
    page; dropping a folder from the desktop onto the view was not exercised.
-4. **Numbers quoted in the tutorials.** The percentages in the glyph and parcellation tutorials (shares of
+3. **Numbers quoted in the tutorials.** The percentages in the glyph and parcellation tutorials (shares of
    connexels at given thresholds) and the arrow direction convention in the Directionality bridge were not
    re-derived during the last pass.
 

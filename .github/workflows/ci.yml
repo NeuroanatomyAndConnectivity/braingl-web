@@ -50,8 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     # Hosted runners have no GPU: Chrome renders WebGL with SwiftShader, and the smoke test lowers
     # the connexel budget and raises its time limits when it detects a software renderer (see the
-    # header of tests/e2e/smoke.mjs). A failure here is reported but does not block merging.
-    continue-on-error: true
+    # header of tests/e2e/smoke.mjs).
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

@@ -204,5 +204,5 @@ locally.
    deployed site does); screenshots of failed checks are uploaded as the artifact `e2e-screenshots`.
 5. **blender**: `python tests/blender/test_import.py` with the `bpy` module.
 
-The last two are marked `continue-on-error`: a failure is reported but does not block merging. Run the three npm
+The Blender job is marked `continue-on-error` (a failure is reported but does not block merging); the browser smoke test is a required check. Run the three npm
 checks (and the others when you touch their areas) before opening a pull request; see [Contributing](contributing.md).
