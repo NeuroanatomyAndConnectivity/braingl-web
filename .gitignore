@@ -1,0 +1,10 @@
+node_modules
+dist
+.DS_Store
+*.tsbuildinfo
+.vite
+__pycache__
+.venv
+public/data/local/
+examples/
+site/

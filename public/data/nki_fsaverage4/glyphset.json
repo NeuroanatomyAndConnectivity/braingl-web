@@ -1,0 +1,47 @@
+{
+ "format": "braingl-web-glyphset",
+ "version": 1,
+ "name": "NKI Rockland average (n=40, fsaverage4)",
+ "description": "Group-average resting-state functional connectivity (Pearson r, Fisher-z averaged) of 40 participants of the enhanced NKI Rockland sample, fsaverage4 (both hemispheres).",
+ "nodes": 5124,
+ "leftNodes": 2562,
+ "leftTriangles": 5120,
+ "triangles": "triangles.u32",
+ "surfaces": [
+  {
+   "name": "pial",
+   "file": "pial.f32"
+  },
+  {
+   "name": "inflated",
+   "file": "inflated.f32"
+  },
+  {
+   "name": "sphere",
+   "file": "sphere.f32"
+  },
+  {
+   "name": "white",
+   "file": "white.f32"
+  }
+ ],
+ "overlays": [
+  {
+   "name": "sulc",
+   "file": "sulc.f32"
+  },
+  {
+   "name": "curv",
+   "file": "curv.f32"
+  }
+ ],
+ "mask": "mask.u8",
+ "connectivity": {
+  "file": "connectivity.i8",
+  "dtype": "int8",
+  "layout": "upper",
+  "scale": 0.0075928428041653374
+ },
+ "source": "http://fcon_1000.projects.nitrc.org/indi/enhanced/",
+ "subjects": 40
+}

@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the paper listed under preferred-citation."
+title: "brainGL web"
+type: software
+authors:
+  - family-names: Margulies
+    given-names: "Daniel S."
+license: MIT
+preferred-citation:
+  type: article
+  title: "Connexel visualization: a software implementation of glyphs and edge-bundling for dense connectivity data using brainGL"
+  authors:
+    - family-names: Böttger
+      given-names: Joachim
+    - family-names: Schurade
+      given-names: Ralph
+    - family-names: Jakobsen
+      given-names: Estrid
+    - family-names: Schaefer
+      given-names: Alexander
+    - family-names: Margulies
+      given-names: "Daniel S."
+  journal: "Frontiers in Neuroscience"
+  volume: 8
+  year: 2014
+  doi: "10.3389/fnins.2014.00015"
+  pages: 15
