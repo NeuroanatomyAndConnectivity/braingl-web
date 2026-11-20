@@ -122,7 +122,7 @@ Run it with `blender --background --python render_custom.py -- <scene folder> <o
 - **Glyph alpha** is not exported; all exported glyph primitives are opaque.
 - At most 400,000 glyph primitives are exported; beyond that they are sub-sampled and the layer is marked as such.
 - The LIC streaks of the Directionality workspace are not exported, only the surface and the arrows.
-- The second view, the cross-hair and the paint outline effects are not exported; paint colours are.
+- The second view is not exported; the paint colours on the surface are.
 
 ## Troubleshooting
 

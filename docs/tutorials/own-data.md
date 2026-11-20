@@ -112,7 +112,8 @@ surfaces; the tool computes Pearson correlations and does not resample):
 
 ```bash
 python tools/make_glyphset.py from-timeseries \
-  --left lh.pial lh.inflated lh.sphere --right rh.pial rh.inflated rh.sphere \
+  --left  my_glyphset/lh.pial.surf.gii my_glyphset/lh.inflated.surf.gii my_glyphset/lh.sphere.surf.gii \
+  --right my_glyphset/rh.pial.surf.gii my_glyphset/rh.inflated.surf.gii my_glyphset/rh.sphere.surf.gii \
   --names pial,inflated,sphere \
   --timeseries lh.timeseries.npy rh.timeseries.npy \
   --out public/data/local/my_set
