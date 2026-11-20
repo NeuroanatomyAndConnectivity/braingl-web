@@ -1,6 +1,6 @@
 import { mat3, mat4, vec3 } from "gl-matrix";
 import type { GlyphDataset, MeshTopology, SphereInfo } from "../data/dataset";
-import { computeNormals, normaliseSulc } from "../data/dataset";
+import { computeNormals, hemisphereTriangles, normaliseSulc } from "../data/dataset";
 import type { GlyphParams } from "../glyphs/params";
 import { lengthSurfaceIndex } from "../glyphs/params";
 import { buildConnexels, buildDiffConnexels, computePieRanks, sortForPies } from "../glyphs/builders";
@@ -102,10 +102,8 @@ export function bakeSurface(input: GlyphBakeInput): Layer {
     }
     colors[4 * i] = r * 255; colors[4 * i + 1] = g * 255; colors[4 * i + 2] = b * 255; colors[4 * i + 3] = 255;
   }
-  let triangles = ds.triangles;
-  const split = ds.leftTriangles > 0 && ds.leftTriangles * 3 < triangles.length ? ds.leftTriangles * 3 : 0;
-  if (split && p.hemi === 1) triangles = triangles.subarray(0, split);
-  if (split && p.hemi === 2) triangles = triangles.subarray(split);
+  const [first, count] = hemisphereTriangles(ds, p.hemi);
+  const triangles = ds.triangles.subarray(first, first + count);
   return { name: `surface ${ds.surfaces[p.surface].name}`, kind: "mesh", positions: pos, colors, triangles, shading: "lit", smooth: true, opacity: p.surfaceAlpha };
 }
 

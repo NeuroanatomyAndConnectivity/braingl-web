@@ -55,7 +55,7 @@ Right-click anywhere on the surface. On a Mac trackpad, click with two fingers o
 
 ![A node in the parietal cortex is selected; the second view shows its connectivity map](../images/quickstart-seed.png)
 
-A cross-hair marks the node in both views, the second view shows the node's connectivity map
+A cross-hair marks the node in both views (it is hidden in a view where the node itself cannot be seen, for example on the far side of the brain), the second view shows the node's connectivity map
 through the colour map in the legend at the bottom right, and the status line gives the node
 number and its coordinates. Press ++n++ to return to the *Navigate* tool.
 

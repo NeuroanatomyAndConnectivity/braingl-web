@@ -19,8 +19,10 @@ to restyle the result.
 !!! note "How the commands on this page were tested"
     All command lines were run with the `bpy` 5.0.1 Python module (Blender as a Python package,
     `pip install bpy`), in which `python import_braingl.py -- …` takes the place of
-    `blender --background --python import_braingl.py -- …`. The figures are the unedited results.
-    The `blender` forms of the commands were not run for this page.
+    `blender --background --python import_braingl.py -- …`. The figures were rendered at 1300
+    pixels width with 32 samples (`--resolution 1300 --samples 32`) and reduced to a palette of at
+    most 256 colours to keep the pages light; otherwise they are not edited. The `blender` forms
+    of the commands were not run for this page.
 
 ![Pie glyphs on both hemispheres, rendered in Blender from the pies example scene](../images/blender-pies.png)
 
@@ -29,7 +31,8 @@ to restyle the result.
 **Export for Blender** in the top bar exports the workspace that is in front.
 
 1. In the **Connectivity glyphs** workspace, arrange the view you want: surface, glyph style,
-   thresholds, camera. The example uses pie glyphs (key ++3++) in the dorsal view (**D**).
+   thresholds, camera. The example uses pie glyphs (key ++3++) with **Threshold** 0.4 and
+   **Minimum length (mm)** 20 in the dorsal view (**D**), with the side panel hidden (☰).
 2. Click **Export for Blender**.
 
 ![The Export for Blender button in the top bar](../images/blender-export-button.png)
@@ -100,7 +103,7 @@ blender --background --python braingl-pies-blender/import_braingl.py -- \
 
 ```text
 brainGL: surface inflated: 5,124 mesh vertices
-brainGL: glyphs pies: 580,545 mesh vertices
+brainGL: glyphs pies: 585,906 mesh vertices
 brainGL: imported 'NKI Rockland average (n=40, fsaverage4) (pies)' with 2 layer(s)
 brainGL: rendered /home/you/pies.png
 ```
@@ -112,8 +115,8 @@ On macOS the program is inside the application bundle:
 
 ## 4. What the script creates
 
-The script removes the objects already in the file (the default cube, or an earlier import;
-`--keep` prevents this) and creates:
+The script removes the objects already in the scene (the default cube, camera and lamp, or an
+earlier import; `--keep` prevents this) and creates:
 
 | In Blender | What |
 |---|---|
@@ -171,10 +174,12 @@ the same code that the button uses.
 npm run export:blender -- --all --out examples/blender
 ```
 
+After npm's own line with the command, the tool prints one line per scene:
+
 ```text
 /home/you/braingl-web/examples/blender/points: surface inflated [5,124], glyphs points [285,386] (290,510 vertices)
 /home/you/braingl-web/examples/blender/vectors: surface inflated [5,124], glyphs vectors [725,542, subsampled] (730,666 vertices)
-/home/you/braingl-web/examples/blender/pies: surface inflated [5,124], glyphs pies [580,545] (585,669 vertices)
+/home/you/braingl-web/examples/blender/pies: surface inflated [5,124], glyphs pies [585,906] (591,030 vertices)
 /home/you/braingl-web/examples/blender/polar: surface inflated [5,124], glyphs points [339,585, subsampled] (344,709 vertices)
 /home/you/braingl-web/examples/blender/diffpoints: surface inflated [5,124], glyphs diffpoints [78,776] (83,900 vertices)
 /home/you/braingl-web/examples/blender/littlebrains: surface inflated [5,124], little brains [307,440, subsampled], glyphs points [39,676] (352,240 vertices)
@@ -222,9 +227,9 @@ With EEVEE each scene takes a few seconds. The results:
 
 ![Bundled long-range connections inside a transparent surface (bundles)](../images/blender-bundles.png)
 
-![Directionality arrows on the bundled label34 parcellation (directionality-label34)](../images/blender-directionality-label34.png)
+![Directionality arrows on the label34 parcellation that comes with the app (directionality-label34)](../images/blender-directionality-label34.png)
 
-![The connectivity map of one seed node sent through Map → Directionality (directionality-seed-map)](../images/blender-directionality-seed-map.png)
+![The connectivity map of seed node 1200 sent through Map → Directionality, with larger arrows than the panel's default (directionality-seed-map)](../images/blender-directionality-seed-map.png)
 
 To export one scene with your own settings or data:
 
@@ -417,7 +422,8 @@ anywhere. Some things therefore differ:
   with "up" pointing to the superior side. Seen from the export camera they look the same on
   surfaces that face the viewer and foreshortened near the edge of the brain.
 - **Pies are resampled to at most 48 wedges.** A pie can have thousands of slices; each
-  exported wedge has the mean colour of the slices it covers.
+  exported wedge has the mean colour of the slices it covers. A pie of one or two slices (a full
+  or a half disc) is cut into 24 wedges, so that it stays round.
 - **Glyph alpha is not exported.** All exported glyph primitives are opaque, also when
   **Glyphs → Glyph alpha** is below 1. Surface transparency (**Surface → Alpha**) is exported.
 - **Points and lines have a size in millimetres.** On screen their size is in pixels. The
@@ -428,7 +434,8 @@ anywhere. Some things therefore differ:
   command-line export and of the import script). Raise the threshold or restrict the glyphs to
   a region to stay below the limit.
 - **LIC streaks are not exported.** They are computed on the screen and have no 3-D form. A
-  Directionality export contains the surface and the arrows. **Borders only** and the arrow
+  Directionality export contains the surface and the arrows; each arrow is a flat shape laid
+  into the plane tangent to the surface at its position. **Borders only** and the arrow
   **Opacity** of that workspace are not applied either.
 - **The second view is not exported.** The cross-hair of the selected node is not exported
   either; the paint colours on the surface are.
@@ -438,7 +445,7 @@ anywhere. Some things therefore differ:
 | Problem | Remedy |
 |---|---|
 | "scene.json is not a brainGL-web Blender scene", or "No such file … scene.json" | Give the script the unzipped folder that contains `scene.json`, after the `--`. |
-| "ambiguous option: --cycles could match --cycles-device, --cycles-print-stats" | Use `--engine cycles`. The Blender application reads `--cycles…` options itself. |
+| "ambiguous option: --cycles could match --cycles-print-stats, --cycles-device" | Use `--engine cycles`. The Blender application reads `--cycles…` options itself. |
 | The options have no effect, or Blender reports an unknown argument | The script's options must come after a `--`. Before it, Blender reads them as its own. |
 | "Render error … cannot save" in your own script | Give Blender an absolute output path (`os.path.abspath`), as the recipes above do. |
 | Point glyphs are missing in the render | The point cloud needs a recent Blender. Import with `--points mesh` for real geometry. |

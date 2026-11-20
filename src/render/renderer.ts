@@ -2,9 +2,10 @@ import { mat3 } from "gl-matrix";
 import { Camera } from "../gfx/camera";
 import { Program, createBuffer, createLutTexture, createPositionTexture, createRowTexture, updateLutTexture } from "../gfx/gl";
 import type { GlyphDataset } from "../data/dataset";
-import { computeNormals, normaliseSulc } from "../data/dataset";
+import { computeNormals, hemisphereTriangles, normaliseSulc } from "../data/dataset";
 import { CONNEXEL_STRIDE, DIFF_STRIDE } from "../glyphs/builders";
 import { SHADERS } from "./shaders";
+import { cursorVisible } from "./cursorVisibility";
 
 export type GlyphStyle = "points" | "vectors" | "pies" | "diffpoints" | "off";
 
@@ -61,6 +62,8 @@ export interface DrawState {
 }
 
 interface SurfaceGL {
+  /** vertex normals, kept on the CPU for the visibility test of the selection cross-hair */
+  normals: Float32Array;
   posTex: WebGLTexture;
   posBuf: WebGLBuffer;
   normalBuf: WebGLBuffer;
@@ -135,13 +138,17 @@ export class GlyphRenderer {
     const gl = this.gl;
     this.disposeDataset();
     this.ds = ds;
-    this.surfaces = ds.surfaces.map((s) => ({
-      posTex: createPositionTexture(gl, s.positions),
-      posBuf: createBuffer(gl, gl.ARRAY_BUFFER, s.positions),
-      normalBuf: createBuffer(gl, gl.ARRAY_BUFFER, computeNormals(s.positions, ds.triangles)),
-      surfaceVao: null,
-      littleVao: null,
-    }));
+    this.surfaces = ds.surfaces.map((s) => {
+      const normals = computeNormals(s.positions, ds.triangles);
+      return {
+        normals,
+        posTex: createPositionTexture(gl, s.positions),
+        posBuf: createBuffer(gl, gl.ARRAY_BUFFER, s.positions),
+        normalBuf: createBuffer(gl, gl.ARRAY_BUFFER, normals),
+        surfaceVao: null,
+        littleVao: null,
+      };
+    });
     this.indexBuf = createBuffer(gl, gl.ELEMENT_ARRAY_BUFFER, ds.triangles);
     this.scalarBuf = createBuffer(gl, gl.ARRAY_BUFFER, new Float32Array(ds.n), gl.DYNAMIC_DRAW);
     this.overlayBuf = createBuffer(gl, gl.ARRAY_BUFFER, new Float32Array(ds.n), gl.DYNAMIC_DRAW);
@@ -294,8 +301,6 @@ export class GlyphRenderer {
     }
   }
 
-  get littleBrainCount(): number { return this.lbCount; }
-
   /** Line segments: 28 bytes each (p0 xyz, p1 xyz as float32, rgba8). */
   setSegments(data: ArrayBuffer | null, count: number): void {
     const gl = this.gl;
@@ -434,23 +439,18 @@ export class GlyphRenderer {
     gl.bindVertexArray(this.surfaceVao(s.surface));
     gl.bindBuffer(gl.ARRAY_BUFFER, s.scalarSource === "overlay" ? this.overlayBuf : this.scalarBuf);
     gl.vertexAttribPointer(2, 1, gl.FLOAT, false, 0, 0);
-    const split = ds.leftTriangles > 0 && ds.leftTriangles * 3 < ds.triangles.length ? ds.leftTriangles * 3 : 0;
-    let first = 0, count = ds.triangles.length;
-    if (split && s.hemi === 1) count = split;
-    if (split && s.hemi === 2) { first = split; count = ds.triangles.length - split; }
+    const [first, count] = hemisphereTriangles(ds, s.hemi);
     gl.drawElements(gl.TRIANGLES, count, gl.UNSIGNED_INT, first * 4);
   }
 
-  draw(vp: Viewport, cam: Camera, s: DrawState, clear = true): void {
+  draw(vp: Viewport, cam: Camera, s: DrawState, ): void {
     const gl = this.gl;
     gl.viewport(vp.x, vp.y, vp.w, vp.h);
     gl.enable(gl.SCISSOR_TEST);
     gl.scissor(vp.x, vp.y, vp.w, vp.h);
-    if (clear) {
-      gl.clearColor(s.background[0], s.background[1], s.background[2], 1);
-      gl.depthMask(true);
-      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    }
+    gl.clearColor(s.background[0], s.background[1], s.background[2], 1);
+    gl.depthMask(true);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     if (!this.ds) { gl.disable(gl.SCISSOR_TEST); return; }
     cam.update(vp.w / vp.h);
     gl.enable(gl.DEPTH_TEST);
@@ -541,8 +541,14 @@ export class GlyphRenderer {
       gl.depthMask(true);
     }
 
-    if (s.cursorNode >= 0 && s.cursorNode < this.ds.n) {
-      const pos = this.ds.surfaces[s.surface].positions;
+    // drawn on top, but only where the node itself can be seen (see cursorVisibility.ts)
+    const mesh = {
+      positions: this.ds.surfaces[s.surface].positions, normals: this.surfaces[s.surface].normals, triangles: this.ds.triangles,
+      leftNodes: this.ds.leftNodes, leftTriangles: this.ds.leftTriangles,
+    };
+    const toward = [cam.viewRot[2], cam.viewRot[5], cam.viewRot[8]]; // world-space direction to the viewer
+    if (s.cursorNode >= 0 && cursorVisible(mesh, s.cursorNode, s.hemi, toward, s.showSurface && opaqueSurface)) {
+      const pos = mesh.positions;
       const p = this.prog.marker;
       p.use();
       p.m4("u_view", cam.view as Float32Array);

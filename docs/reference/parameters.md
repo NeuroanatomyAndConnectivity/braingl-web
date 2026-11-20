@@ -117,9 +117,9 @@ An unknown name falls back to `grey`. The map is not reversed anywhere in the pa
 | Tool | `tool` | `navigate`, `seed`, `paint`, `erase` | `navigate` | Toolbar buttons and keys N, S, P, E. | toolbar |
 | Mean connectivity | button | | | Fisher-z mean of the connectivity rows of all painted nodes, shown as the surface map (`averageConnectivity`). | `avgConRtoZ` |
 | Clear | button | | | Remove all paint. | n/a |
-| Load ROI… | button | | | `.1D`, `.rgb` or id list ([formats](data-formats.md#roi-files)). The nodes are added to the region of the current paint colour. | `loadROI` |
+| Load ROI… | button | | | `.1D`, `.rgb` or id list ([formats](data-formats.md#roi-files)). A `.1D` file or a plain id list is added to the region of the current paint colour; an id list with region numbers (as written by Save labels) gives one region per number, an `.rgb` file one region per colour. | `loadROI` |
 | Save .1D | button | | | One line per node, 1 if painted. | `save1D` |
-| Save labels | button | | | `<node> <region>` per painted node, file `regions.1D.roi`. | n/a |
+| Save labels | button | | | `<node> <region>` per painted node, file `regions.1D.roi`; Load ROI… restores the regions (not their colours). | n/a |
 
 ## Anatomical background glyphs
 

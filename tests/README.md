@@ -13,12 +13,13 @@ All commands are run from the repository root.
 
 Continuous integration (`.github/workflows/ci.yml`) runs the type check, `npm test`, the build and pytest (with
 exactly numpy, scipy, nibabel and pytest installed); the Blender tests and the smoke test run as well but do not
-block merging.
+block merging (the smoke test there renders with SwiftShader, see below, and uploads screenshots of failed checks as
+the artifact `e2e-screenshots`).
 
 ## Vitest
 
 ```
-npm test                              # everything once: about 5,700 tests in about 5 s
+npm test                              # everything once: about 5,760 tests in about 5 s
 npm run test:watch                    # re-run on change
 npx vitest run src/glyphs             # a subset, by path
 npx vitest run -t "homotopic"         # tests whose name contains a string
@@ -72,7 +73,8 @@ Data layer:
   back to the same dataset; FreeSurfer `lh.sulc` / `lh.curv` files become overlays and are never taken for the
   matrix; error paths; the 65,535-node limit of `GlyphApp.setDataset`.
 - `src/io/*.test.ts`: the file-format parsers (`.npy`, GIFTI, FreeSurfer ASCII and binary, brainGL's `.glyphset` /
-  `.set` / ROI files). The GIFTI cases include dimensions beyond the cap of 2^28 elements, dimensions the data
+  `.set` / ROI files, the latter both as one mask and as several regions: region numbers of an id list, colours of an
+  `.rgb` file, the colour-map fallback, and the round trip through the labels writer). The GIFTI cases include dimensions beyond the cap of 2^28 elements, dimensions the data
   cannot fill, and a compressed stream that expands far beyond its declared size.
 - `src/glyphs/builders.test.ts`, `src/glyphs/builders.datasets.test.ts`: `buildConnexels`, `sortForPies`,
   `computePieRanks`, `buildDiffConnexels`, `createConnexels`, `averageConnectivity` against brute force for many
@@ -81,6 +83,12 @@ Data layer:
   requested threshold while the budget allows and otherwise takes the smallest raw threshold whose count fits; the
   upper threshold is not applied.
 - `src/glyphs/picking.test.ts`: ray picking and the paint brush.
+- `src/glyphs/roiRegions.test.ts`: how the regions of a loaded ROI file become labels and paint colours (the paint
+  colour for the first, unused palette colours for the others, merging by colour, the limit of 255 regions) and the
+  round trip Save labels, Clear, Load ROI.
+- `src/render/cursorVisibility.test.ts`: when the selection cross-hair is drawn (hidden hemisphere, normal facing
+  away, the other hemisphere in front, transparent surface), and on the folded and inflated fixture surfaces from
+  seven directions that it never shows a node that a ray from the viewer cannot reach.
 
 Other suites, each next to its module: `src/export/*.test.ts` (PLY byte layout and ZIP validity, the Blender
 bundle and `scene.json`, baking glyph and directionality scenes, `sceneFromDataset`), `src/algorithms/*.test.ts`
@@ -144,6 +152,15 @@ its own tiny scene and checks what `public/blender/import_braingl.py` builds fro
 demo loads, every glyph style draws, selection, the directionality workspace, the Blender export download, and no
 console or network errors. Its header lists the flags and every check.
 
+It prints the WebGL renderer first. On a software renderer (SwiftShader on GitHub's runners, llvmpipe) it starts the
+glyph workspace with the smallest connexel budget (0.5 million instead of 4) and raises its time limits (240 s to
+settle, 360 s per check); the pixel thresholds stay the same. `--software-gl` (or `E2E_SOFTWARE_GL=1`) forces
+SwiftShader on macOS too:
+
+```
+node tests/e2e/smoke.mjs --url http://localhost:5173 --software-gl     # about a minute on a 12-core Mac
+```
+
 ## Known bugs and conventions
 
 No case is marked as an expected failure at present. A defect that cannot be fixed at once is documented where it
@@ -155,7 +172,8 @@ which point the mark is removed.
 
 - WebGL output is not compared pixel by pixel; shaders, `src/render/renderer.ts` and the user interface
   (`src/glyphs/glyphApp.ts`, `src/ui`) are exercised only by the smoke test, in Chrome only. Vitest runs without
-  a DOM.
+  a DOM, so the rules behind them that can be stated without one live in pure modules with unit tests
+  (`roiRegions.ts`, `cursorVisibility.ts`, the builders, the baker).
 - `urlGetter` (download with progress) and the bundling web worker wrapper need a browser and are reached only
   through the smoke test.
 - The real `nki-demo` download and anything else that needs the network.

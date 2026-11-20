@@ -78,6 +78,18 @@ export function buildTopology(n: number, triangles: Uint32Array): MeshTopology {
 }
 
 /** Area-weighted vertex normals. */
+/**
+ * Range of `triangles` (first index, number of indices) that belongs to the hemispheres shown:
+ * `hemi` 0 both, 1 left, 2 right. Without a hemisphere split it is always the whole mesh.
+ */
+export function hemisphereTriangles(mesh: Pick<GlyphDataset, "triangles" | "leftTriangles">, hemi: 0 | 1 | 2): [number, number] {
+  const total = mesh.triangles.length;
+  const split = mesh.leftTriangles > 0 && mesh.leftTriangles * 3 < total ? mesh.leftTriangles * 3 : 0;
+  if (split && hemi === 1) return [0, split];
+  if (split && hemi === 2) return [split, total - split];
+  return [0, total];
+}
+
 export function computeNormals(positions: Float32Array, triangles: Uint32Array): Float32Array {
   const normals = new Float32Array(positions.length);
   for (let t = 0; t < triangles.length; t += 3) {

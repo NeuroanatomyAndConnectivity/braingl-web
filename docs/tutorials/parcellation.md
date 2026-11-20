@@ -113,6 +113,8 @@ left, red and purple grow towards the right.
 
 ![Pie glyphs of the region](../images/parcellation-pies.png)
 
+Press ++1++ and set **Scale** back to 0.04 before you continue.
+
 **Why this works.** Nodes of one area share their connections, so their glyphs look alike. A
 border is where the glyphs of neighbours differ. The change is rarely a clean line, and
 deciding where to draw it is the manual part of manual parcellation. Three aids help.
@@ -124,18 +126,18 @@ second view (nodes 1150 and 522):
 
 ![Node 522 selected: its map covers the operculum, insula, supramarginal gyrus and ventral motor cortex](../images/parcellation-seed-posterior.png)
 
-**Aid 2: difference glyphs.** Press ++4++. The app sets the threshold to 0.193 and the minimum
-length to 0. Set **Threshold** to 0.15, **Minimum length** to 20, **Scale** to 0.012 and
-**Point / line size** to 4.
+**Aid 2: difference glyphs.** Select node 1151 again and press ++4++. The app sets the
+threshold to 0.193 and the minimum length to 0. Set **Threshold** to 0.15, **Minimum length**
+to 20, **Scale** to 0.012 and **Point / line size** to 4.
 
-![Difference glyphs in the region form a line from the upper middle to the lower right](../images/parcellation-diffpoints.png)
+![Difference glyphs in the region form a line from the top of the region down past the cross-hair on node 1151](../images/parcellation-diffpoints.png)
 
 A difference glyph sits on a mesh edge and shows the targets to which the two nodes of the
 edge differ. Edges inside a homogeneous patch stay empty; the filled edges line up along the
 border, here through the edges 1150–1151, 1151–1152 and 523–1152. Press ++1++ to return to points.
 
-**Aid 3: anatomical background glyphs.** Set **Threshold** to 0.4 and **Scale** to 0.03, open
-**Anatomical background glyphs** and tick **Show little brains**.
+**Aid 3: anatomical background glyphs.** Set **Threshold** to 0.4, **Scale** to 0.03 and
+**Point / line size** to 3, open **Anatomical background glyphs** and tick **Show little brains**.
 
 ![A miniature brain behind every glyph of the region](../images/parcellation-littlebrains.png)
 
@@ -161,17 +163,21 @@ exactly its colour again.
 ## 6. Mean connectivity of a region
 
 **Mean connectivity** shows the average connectivity (Fisher z) of **all** painted nodes as
-the surface map. To get the map of one region, the other must be removed first. Save the
-regions before you do that (step 7, **Export → Save scene**).
+the surface map. To get the map of one region, the other must be removed first, so keep a copy
+of both regions.
 
-1. Erase the blue region (**Erase** tool, a large brush).
-2. Click **Mean connectivity** and set **Surface → Colour** to *vertex data (seed connectivity)*
-   to see the map in the main view. Press ++0++ to hide the glyphs.
+1. Click **Regions & painting → Save labels**. The browser saves `regions.1D.roi`.
+2. Erase the blue region (**Erase** tool).
+3. Click **Mean connectivity** and set **Surface → Colour** to *vertex data (seed connectivity)*
+   to see the map in the main view. Press ++0++ to hide the glyphs and click **L** to see the
+   whole hemisphere.
 
 ![Mean connectivity of the anterior region](../images/parcellation-mean-anterior.png)
 
-3. Load the scene again (**Export → Load scene…**), erase the orange region and click
-   **Mean connectivity** once more.
+4. Click **Clear**, set **Paint colour** back to orange, click **Load ROI…** and choose
+   `regions.1D.roi`. Both regions come back: the first in the paint colour (orange), the second
+   in a new colour (a steel blue).
+5. Erase the orange region and click **Mean connectivity** once more.
 
 ![Mean connectivity of the posterior region](../images/parcellation-mean-posterior.png)
 
@@ -188,23 +194,27 @@ separates two connectivity profiles. Jakobsen et al. used the same logic for are
 | **Save .1D** | `roi.1D` | one line per node: 1 if painted (any region), else 0 |
 | **Save labels** | `regions.1D.roi` | one line per painted node: node number and region number |
 | **Export → Save scene** | `braingl-scene-….scn.json` | all settings, both views and the regions with their colours |
-| **Load ROI…** | `.1D`, `.rgb` or a list of node numbers | the nodes are added as **one** region in the current paint colour |
-| **Export → Load scene…** | a scene file | restores the regions if the node count matches |
+| **Load ROI…** | `regions.1D.roi`, a list of node numbers, `.1D` or `.rgb` | the regions of the file, added to what is painted (see below) |
+| **Export → Load scene…** | a scene file | restores the regions with their colours if the node count matches |
 
-Region numbers follow the order in which the colours were first used. **Load ROI…** does not
-read region numbers: `regions.1D.roi` comes back as a single region. To restore several
-regions, load a scene, or split the labels file and load each part with its own paint colour:
+Region numbers follow the order in which the colours were first used. **Load ROI…** reads:
 
-```sh
-awk '$2 == 1 { print $1 }' regions.1D.roi > region1.txt
-awk '$2 == 2 { print $1 }' regions.1D.roi > region2.txt
-```
+- a labels file such as `regions.1D.roi` (`<node number> <region number>` per line): one region
+  per region number. The lowest number gets the current paint colour, every further one a new
+  colour from a fixed palette, because the file holds numbers, not colours;
+- a list of node numbers alone, or a `.1D` file: one region, in the current paint colour;
+- an `.rgb` file: one region per colour, in that colour (white means unpainted).
+
+The nodes of the file replace any paint they had; all other nodes keep theirs. A loaded region
+whose colour is already painted joins that region. To get the original colours back as well,
+load a scene instead.
 
 File formats are described in [Data formats](../reference/data-formats.md#roi-files).
 
 ## 8. Send the regions to the Directionality workspace
 
-Click **Export → Regions → Directionality**.
+If you erased a region in step 6, click **Clear** and load `regions.1D.roi` again. Then click
+**Export → Regions → Directionality**.
 
 ![The two regions in the Directionality workspace, with arrows across their common border](../images/parcellation-directionality.png)
 
@@ -224,7 +234,7 @@ status line says "The painted regions do not touch" for eight seconds. See
 | All glyphs vanish after choosing *painted nodes only* | Nothing is painted; the status line says "paint a region to create glyphs". |
 | A second colour extends the first region | The colour is identical. Pick a visibly different colour. |
 | **Mean connectivity** shows a mixture | It averages all painted nodes (step 6). |
-| A reloaded labels file has one region | **Load ROI…** ignores region numbers (step 7). |
+| A reloaded labels file has other colours | The file stores region numbers, not colours: the first region takes the current paint colour, the others new colours (step 7). A scene keeps the colours. |
 | The key shortcuts do nothing | The focus is in a panel field. Click in the view first. |
 
 ## Where next

@@ -56,7 +56,7 @@ the web controls.
 |---|---|---|---|---|
 | Orthographic main view | yes | yes | Ported | Required for screen-facing glyphs. |
 | Second, coupled view of seed connectivity | `maingl2` | the inset | Ported | |
-| Node selection | right mouse button, synchronised cursor | right mouse button, double-click, Seed tool | Ported | |
+| Node selection | right mouse button, synchronised cursor | right mouse button, double-click, Seed tool; the cursor is shown only where its node can be seen | Ported | A cursor shining through the surface pointed at a node on the far side. |
 | Painting regions | ctrl + right-drag, ctrl + shift to erase | same, plus Paint/Erase tools and keys | Ported | |
 | Several regions | one ROI | each paint colour is a region | Changed | Needed for the bridge to Directionality. |
 | Mean connectivity of a region | `avgConRtoZ` (Fisher-z mean) | same | Ported | |
@@ -81,7 +81,7 @@ the web controls.
 |---|---|---|---|---|
 | `.glyphset`, `.set`, FreeSurfer `.asc`, float32 matrix | yes | yes | Ported | See [Load a brainGL glyphset](../how-to/load-braingl-glyphset.md). |
 | Connectivity from a URL in a `.glyphset` file | yes (`http`) | no | Not ported | Browsers cannot read arbitrary servers; use a web glyphset. |
-| ROI files `.1D`, `.rgb`, id list | yes | yes | Ported | |
+| ROI files `.1D`, `.rgb`, id list | yes, one ROI | yes; Load ROI… restores one region per region number of an id list and per colour of an `.rgb` file | Changed | Several regions exist here, and saved labels must load back as they were saved. |
 | Save `.1D` ROI | `save1D` | yes | Ported | |
 | Web glyphset (`glyphset.json` + binaries) | none | yes | Added | Compact, browser-friendly. Converters in `tools/make_glyphset.py`. |
 | GIFTI surfaces and scalars, FreeSurfer binary, `.npy` matrices | no | yes | Added | The formats current pipelines write. |

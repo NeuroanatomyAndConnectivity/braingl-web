@@ -2,11 +2,11 @@ import { mat3, mat4 } from "gl-matrix";
 import { Camera, CameraState, CanonicalView } from "../gfx/camera";
 import { fractionAbove, thresholdForBudget } from "../data/connMatrix";
 import {
-  buildTopology, computeBounds, findSphere, GlyphDataset, MeshTopology, SphereInfo, surfaceIndexByName,
+  buildTopology, computeBounds, findSphere, GlyphDataset, hemisphereTriangles, MeshTopology, SphereInfo, surfaceIndexByName,
 } from "../data/dataset";
 import { isWebManifest, loadWebGlyphset, urlGetter } from "../data/loadWeb";
 import { loadFromFiles } from "../data/loadFiles";
-import { parseRoiFile, writeRoi1D } from "../io";
+import { parseRoiRegions, writeRoi1D, writeRoiLabels } from "../io";
 import { DrawState, GlyphRenderer, GlyphStyle, Viewport } from "../render/renderer";
 import { colormapLut, COLORMAP_NAMES, lutToCss } from "../render/colormaps";
 import { downloadBlob, hexToRgb, niceStep, Panel, stepDigits } from "../ui/panel";
@@ -15,6 +15,7 @@ import {
   createConnexels, sortForPies,
 } from "./builders";
 import { brushNodes, meanEdgeLength, pickNode } from "./picking";
+import { assignRoiRegions } from "./roiRegions";
 import { defaultGlyphParams, GlyphParams, lengthSurfaceIndex, valueUnit } from "./params";
 import { defaultBundlingOptions, Polylines } from "../algorithms/meanShiftBundling";
 import type { BundlingResponse } from "../algorithms/bundlingWorker";
@@ -194,7 +195,8 @@ export class GlyphApp {
       this.progress("Loading demo glyphset…");
       const res = await fetch(base + "glyphset.json");
       if (!res.ok) throw new Error(`demo data not found at ${url}`);
-      const man: unknown = await res.json();
+      // a dev server answers unknown paths with its HTML page (status 200), so a wrong folder shows up here
+      const man: unknown = await res.json().catch(() => { throw new Error(`no glyphset.json found at ${url}`); });
       if (!isWebManifest(man)) throw new Error("not a web glyphset manifest");
       const ds = await loadWebGlyphset(man, urlGetter(base), (m, f) => this.progress(m, f));
       this.setDataset(ds, null, null);
@@ -656,10 +658,7 @@ export class GlyphApp {
     cam.update(vp.w / vp.h);
     const ray = cam.ray(((at.x - vp.x) / vp.w) * 2 - 1, ((at.y - vp.y) / vp.h) * 2 - 1);
     const si = view === 1 ? this.params.secondSurface : this.params.surface;
-    const split = ds.leftTriangles > 0 && ds.leftTriangles * 3 < ds.triangles.length ? ds.leftTriangles * 3 : 0;
-    let first = 0, count = ds.triangles.length;
-    if (split && this.params.hemi === 1) count = split;
-    if (split && this.params.hemi === 2) { first = split; count -= split; }
+    const [first, count] = hemisphereTriangles(ds, this.params.hemi);
     const hit = pickNode(ds.surfaces[si].positions, ds.triangles, first, count, ray.origin, ray.dir);
     return hit ? { node: hit.node, view } : null;
   }
@@ -1245,7 +1244,7 @@ export class GlyphApp {
         { label: "Clear", onClick: () => { this.labels.fill(0); this.labelColors = []; this.refreshPaint(); this.paintChanged(); } },
       ])
       .buttons([
-        { label: "Load ROI…", tip: ".1D (one value per node), .rgb or a list of node ids", onClick: () => pickFiles({}, (f) => void this.loadRoi(f[0])) },
+        { label: "Load ROI…", tip: ".1D (one value per node: one region), .rgb (one region per colour other than white) or a list of node ids (one region per region number in a second column, as written by Save labels).", onClick: () => pickFiles({}, (f) => void this.loadRoi(f[0])) },
         { label: "Save .1D", tip: "One line per node: 1 inside the painted region, 0 outside (brainGL / AFNI .1D).", onClick: () => downloadBlob(new Blob([writeRoi1D(this.labels.map((v) => (v ? 1 : 0)))]), "roi.1D") },
         { label: "Save labels", tip: "One line per painted node: node id and region number (brainGL .1D.roi).", onClick: () => this.saveLabels() },
       ]);
@@ -1323,10 +1322,10 @@ export class GlyphApp {
     const ds = this.ds;
     if (!ds || !file) return;
     try {
-      const roi = parseRoiFile(file.name, await file.text(), ds.n);
-      let idx = this.labelColors.indexOf(this.params.paintColor);
-      if (idx < 0) { this.labelColors.push(this.params.paintColor); idx = this.labelColors.length - 1; }
-      for (let i = 0; i < ds.n; i++) if (roi[i]) this.labels[i] = idx + 1;
+      const roi = parseRoiRegions(file.name, await file.text(), ds.n);
+      const r = assignRoiRegions(this.labels, this.labelColors, roi, this.params.paintColor);
+      this.labels = r.labels;
+      this.labelColors = r.labelColors;
       this.refreshPaint();
       this.paintChanged();
     } catch (e) {
@@ -1335,9 +1334,7 @@ export class GlyphApp {
   }
 
   private saveLabels(): void {
-    const lines: string[] = [];
-    for (let i = 0; i < this.labels.length; i++) if (this.labels[i]) lines.push(`${i} ${this.labels[i]}`);
-    downloadBlob(new Blob([lines.join("\n") + "\n"]), "regions.1D.roi");
+    downloadBlob(new Blob([writeRoiLabels(this.labels)]), "regions.1D.roi");
   }
 }
 

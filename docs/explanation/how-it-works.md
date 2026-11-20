@@ -148,7 +148,11 @@ change.
 
 The frame draws the opaque surface (with polygon offset so that glyphs near it win), the little brains,
 connection lines, the glyphs (blended, depth writes only if glyph alpha is nearly 1), then a transparent
-surface if requested (back faces then front faces), and finally the selection cursor on top. The inset is a
+surface if requested (back faces then front faces), and finally the selection cursor on top. The cursor is
+not depth tested (a screen-sized sprite would be cut by the surface around its node); instead it is drawn only
+when its node can be seen: the node's hemisphere is shown, and, with an opaque surface, its normal faces the
+viewer and no triangle lies between it and the viewer (one ray test on the CPU,
+`src/render/cursorVisibility.ts`). Through a transparent surface it is always drawn. The inset is a
 second viewport of the same canvas with its own camera and the seed-connectivity map as surface colour;
 the screenshot renders the same frame at a larger size.
 

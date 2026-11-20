@@ -38,7 +38,7 @@ infinite values are read as 0. Which nodes carry data is recorded in a *mask*:
 |---|---|
 | Loose files, brainGL glyphset | the viewer derives it: a node whose row is zero everywhere off the diagonal gets no glyph |
 | `from-timeseries`, `nki-demo` | the tool writes `mask.u8`: nodes with a constant time series are masked |
-| `from-matrix` | no mask is written. Nodes with zero rows have no connections and therefore show nothing with points, vectors and pies, but difference glyphs appear along the edge of the zero region |
+| `from-matrix` | the tool writes `mask.u8` by the same rule as the viewer: a node whose row and column are zero everywhere off the diagonal is masked (no mask file when every node has data) |
 
 **Size.** A glyphset can have at most 65,535 nodes. The practical limit is lower, because the
 browser holds the whole matrix as 16-bit integers:
@@ -181,7 +181,7 @@ The viewer sorts loose files by name and content:
 | File | Accepted | How it is recognised |
 |---|---|---|
 | Surface, one per hemisphere and kind | GIFTI `.surf.gii`, FreeSurfer binary (`lh.pial`, `lh.inflated`), FreeSurfer ASCII `.asc` | hemisphere from `lh` / `rh` / `L` / `R` / `left` / `right` set off by a dot, dash or underscore; kind from `pial`, `white`, `midthickness`, `inflated`, `very_inflated`, `sphere`, `flat`, `smoothwm` or `orig` in the name |
-| Matrix | square `.npy` (float32, float64 or integer), or raw little-endian float32 (`.bin`, `.dat`, `.raw`, `.f32`, or no extension) | the largest candidate file is taken as the matrix |
+| Matrix | square `.npy` (float32, float64 or integer), or raw little-endian float32 (`.bin`, `.dat`, `.data`, `.raw`, `.f32`, or no extension) | the largest candidate file is taken as the matrix |
 | Per-node scalars (optional overlays) | `.shape.gii` / `.func.gii`, FreeSurfer `lh.sulc` / `lh.curv` / `lh.thickness`, `.1D` text | one file with n values, or a left and a right file that add up to n |
 
 Files ending in `.gz`, `.nii`, `.json`, `.txt` and `.md` are skipped, so unpack compressed
@@ -393,8 +393,8 @@ file and what the web version does with each.
 
 Whatever the route, check these four things before you trust the picture.
 
-1. **Counts.** The **Data** section and the status line show the number of nodes and surfaces.
-   The status line also reports how many connexels pass the threshold.
+1. **Counts.** The **Data** section shows the number of nodes and surfaces. The status line
+   shows the number of nodes and how many connexels pass the threshold.
 2. **Hemisphere order.** Set **View → Hemispheres** to *left*. The left hemisphere must remain.
    Then set it back to *both*, set **Surface → Colour** to *vertex data (seed connectivity)*,
    untick **Glyphs → Show glyphs**, click **D** in the toolbar for the dorsal view, and
@@ -455,7 +455,7 @@ Whatever the route, check these four things before you trust the picture.
 | A surface is missing from the **Surface** menus | It has another node count than the first surface and was skipped (a note in the browser console says so). |
 | An overlay does not appear under **Surface → Colour** | Its length is not n, or the left and right files do not add up to n. |
 | The address with `?data=` shows the demo | The folder is on another origin. The browser console says "?data=… ignored: only folders on … can be loaded this way." |
-| "demo data not found at …" after `?data=` | There is no `glyphset.json` at that address. Check the spelling; the folder is given relative to the page. |
+| "demo data not found at …" after `?data=` | There is no `glyphset.json` at that address. Check the spelling; the folder is given relative to the page. The development server (`npm run dev`) answers a wrong address with the app's own page instead, and the message then reads "Unexpected token '<', "<!doctype "... is not valid JSON". |
 | A red message in the status line disappears | Error messages are shown for 8 seconds. They are also written to the browser console (F12). |
 | `make_glyphset.py`: "overlay sulc has … values, the surfaces have … nodes" | The overlay files are on another mesh, or one hemisphere is missing after the `=`. |
 | `make_glyphset.py`: "… not a square float32 matrix" | The raw file's size is not 4·n² bytes. Check the data type; float64 files must be converted. |

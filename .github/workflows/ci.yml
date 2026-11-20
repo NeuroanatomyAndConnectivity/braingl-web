@@ -48,9 +48,11 @@ jobs:
   e2e:
     name: Browser smoke test (headless Chrome, software WebGL)
     runs-on: ubuntu-latest
-    # Software rendering on hosted runners is slow and occasionally flaky; a failure here is
-    # reported but does not block merging.
+    # Hosted runners have no GPU: Chrome renders WebGL with SwiftShader, and the smoke test lowers
+    # the connexel budget and raises its time limits when it detects a software renderer (see the
+    # header of tests/e2e/smoke.mjs). A failure here is reported but does not block merging.
     continue-on-error: true
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -61,6 +63,13 @@ jobs:
       - run: npm run test:e2e
         env:
           CHROME_PATH: google-chrome
+      - name: Upload screenshots of failed checks
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-screenshots
+          path: tests/e2e/.artifacts/
+          if-no-files-found: ignore
 
   blender:
     name: Blender import script (bpy module)

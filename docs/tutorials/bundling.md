@@ -75,7 +75,8 @@ cannot be told apart, the clutter that dense connexels always produce.
 
 ## 3. Bundle
 
-Set **Line colour** back to *orientation* and click **Bundle**. A box with a progress bar
+Set **Line colour** back to *orientation* and the colour map back to *cool - warm* (**Min**
+−0.8, **Max** 0.8), then click **Bundle**. A box with a progress bar
 appears in the view; the app stays usable.
 
 ![Bundling in progress (here for 20,000 connexels)](../images/bundling-progress.png)

@@ -2,8 +2,8 @@
 
 ## Screenshot
 
-1. Arrange the view. Hide what you do not want: untick **View → Second view** unless you want
-   the inset in the picture.
+1. Arrange the view. Hide what you do not want: untick **View → Second view: seed-based
+   connectivity** unless you want the inset in the picture.
 2. Set **View → Background** (for example white).
 3. In **Export**, set **Screenshot scale** (1 to 8, a multiple of the screen resolution) and
    click **Screenshot**.
